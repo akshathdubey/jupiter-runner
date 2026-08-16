@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -28,7 +29,9 @@ QUALITY = (
     .lower()
 )
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
+SUPABASE_URL = os.environ[
+    "SUPABASE_URL"
+]
 
 SUPABASE_KEY = os.environ[
     "SUPABASE_SERVICE_ROLE_KEY"
@@ -111,7 +114,14 @@ def download_object(
             "Supabase storage returned invalid data."
         )
 
-    local_path.write_bytes(data)
+    local_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    local_path.write_bytes(
+        data,
+    )
 
 
 def upload_json(
@@ -188,14 +198,6 @@ def delete_source(
 
 
 def import_private_core() -> None:
-    """
-    GitHub Actions checks out the private repository at:
-
-        jupiter-runner/jupiter-core
-
-    Add it to sys.path before importing the private
-    Jupiter application.
-    """
     core_path = (
         Path(__file__).resolve().parent
         / "jupiter-core"
@@ -206,7 +208,10 @@ def import_private_core() -> None:
             "Private jupiter-core was not checked out."
         )
 
-    app_path = core_path / "app"
+    app_path = (
+        core_path /
+        "app"
+    )
 
     if not app_path.exists():
         raise RuntimeError(
@@ -222,13 +227,37 @@ def import_private_core() -> None:
         )
 
 
+def cleanup_workdir(
+    path: Path,
+) -> None:
+    """
+    Best-effort cleanup.
+
+    On Windows, PyMuPDF may still hold an open PDF handle
+    after parsing. The analysis result is already persisted,
+    so cleanup must never turn a successful job into a failed job.
+    """
+    try:
+        shutil.rmtree(
+            path,
+            ignore_errors=True,
+        )
+    except Exception as exc:
+        print(
+            "Temporary cleanup warning:",
+            exc,
+        )
+
+
 def main() -> None:
     print(
         "========================================"
     )
+
     print(
         "       JUPITER CLOUD ANALYSIS"
     )
+
     print(
         "========================================"
     )
@@ -236,9 +265,11 @@ def main() -> None:
     print(
         f"JOB_ID         = {JOB_ID}"
     )
+
     print(
         f"TARGET_MINUTES = {TARGET_MINUTES}"
     )
+
     print(
         f"QUALITY        = {QUALITY}"
     )
@@ -267,7 +298,7 @@ def main() -> None:
     job = get_job()
 
     document_path = job.get(
-        "document_path"
+        "document_path",
     )
 
     if not document_path:
@@ -276,7 +307,7 @@ def main() -> None:
         )
 
     database_minutes = job.get(
-        "target_minutes"
+        "target_minutes",
     )
 
     if (
@@ -316,8 +347,6 @@ def main() -> None:
 
     import_private_core()
 
-    # These imports intentionally come from the
-    # private jupiter-core checkout.
     from app.parsers.pdf import (
         parse_pdf,
     )
@@ -354,26 +383,44 @@ def main() -> None:
         validate_visual_design,
     )
 
-    update_job(
-        status="running",
-        stage="downloading_source",
-        progress=5,
-        error=None,
-    )
+    work_dir: Path | None = None
+    analysis_succeeded = False
 
-    with tempfile.TemporaryDirectory(
-        prefix=(
-            f"jupiter-analysis-{JOB_ID}-"
-        ),
-    ) as temp_dir:
+    original_cwd = Path.cwd()
 
-        work_dir = Path(temp_dir)
+    try:
+        work_dir = Path(
+            tempfile.mkdtemp(
+                prefix=(
+                    f"jupiter-analysis-{JOB_ID}-"
+                ),
+            )
+        )
+
+        uploads_dir = (
+            work_dir /
+            "uploads"
+        )
+
+        uploads_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        os.chdir(
+            work_dir,
+        )
 
         source_path = (
-            work_dir
-            / Path(
-                document_path
-            ).name
+            work_dir /
+            Path(document_path).name
+        )
+
+        update_job(
+            status="running",
+            stage="downloading_source",
+            progress=5,
+            error=None,
         )
 
         print(
@@ -385,13 +432,13 @@ def main() -> None:
             source_path,
         )
 
+        print(
+            f"Source file: {source_path.name}"
+        )
+
         suffix = (
             source_path.suffix
             .lower()
-        )
-
-        print(
-            f"Source file: {source_path.name}"
         )
 
         # -------------------------------------------------
@@ -404,13 +451,11 @@ def main() -> None:
         )
 
         if suffix == ".pdf":
-
             artifact = parse_pdf(
                 source_path
             )
 
         elif suffix == ".txt":
-
             text = (
                 source_path.read_text(
                     encoding="utf-8",
@@ -420,22 +465,29 @@ def main() -> None:
 
             artifact = {
                 "document": {
-                    "type": "txt",
+                    "type":
+                        "txt",
                     "title":
                         source_path.stem,
                     "language":
                         "unknown",
                 },
+
                 "content_blocks": [
                     {
-                        "id": "text_1",
-                        "page": None,
-                        "type": "text",
-                        "text": text,
+                        "id":
+                            "text_1",
+                        "page":
+                            None,
+                        "type":
+                            "text",
+                        "text":
+                            text,
                         "importance":
                             "unclassified",
                     }
                 ],
+
                 "images": [],
                 "tables": [],
                 "equations": [],
@@ -491,7 +543,7 @@ def main() -> None:
         )
 
         # -------------------------------------------------
-        # ARTIFACT 2 — TEACHER PLAN
+        # ARTIFACT 2
         # -------------------------------------------------
 
         update_job(
@@ -524,7 +576,7 @@ def main() -> None:
         )
 
         # -------------------------------------------------
-        # ARTIFACT 3 — VISUAL DESIGN
+        # ARTIFACT 3
         # -------------------------------------------------
 
         update_job(
@@ -573,7 +625,7 @@ def main() -> None:
         visual_review = None
 
         if visual_validation.get(
-            "passed"
+            "passed",
         ):
             update_job(
                 stage="visual_review",
@@ -602,11 +654,9 @@ def main() -> None:
         # FINAL RESULT
         # -------------------------------------------------
 
-        ready_for_generation = (
-            bool(
-                visual_validation.get(
-                    "passed"
-                )
+        ready_for_generation = bool(
+            visual_validation.get(
+                "passed",
             )
         )
 
@@ -662,7 +712,7 @@ def main() -> None:
         )
 
         print(
-            f"Uploading analysis result: {result_path}"
+            f"Uploading result: {result_path}"
         )
 
         upload_json(
@@ -670,9 +720,9 @@ def main() -> None:
             result_path,
         )
 
-        # The original uploaded document is temporary.
+        # Source document is no longer needed.
         delete_source(
-            document_path
+            document_path,
         )
 
         final_stage = (
@@ -689,12 +739,16 @@ def main() -> None:
             error=None,
         )
 
+        analysis_succeeded = True
+
         print(
             "========================================"
         )
+
         print(
             "     JUPITER ANALYSIS = SUCCESS"
         )
+
         print(
             "========================================"
         )
@@ -703,38 +757,56 @@ def main() -> None:
             f"RESULT = {result_path}"
         )
 
+    except Exception as exc:
+        if not analysis_succeeded:
+            error_message = (
+                f"{type(exc).__name__}: {exc}"
+            )
+
+            print(
+                "========================================"
+            )
+
+            print(
+                "      JUPITER ANALYSIS = FAILED"
+            )
+
+            print(
+                "========================================"
+            )
+
+            print(
+                error_message
+            )
+
+            try:
+                update_job(
+                    status="failed",
+                    stage="analysis_failed",
+                    progress=100,
+                    error=error_message,
+                )
+            except Exception as update_error:
+                print(
+                    "Could not update failed job:",
+                    update_error,
+                )
+
+            raise
+
+    finally:
+        try:
+            os.chdir(
+                original_cwd,
+            )
+        except Exception:
+            pass
+
+        if work_dir is not None:
+            cleanup_workdir(
+                work_dir,
+            )
+
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as exc:
-        error_message = (
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        print(
-            "========================================"
-        )
-        print(
-            "      JUPITER ANALYSIS = FAILED"
-        )
-        print(
-            "========================================"
-        )
-
-        print(error_message)
-
-        try:
-            update_job(
-                status="failed",
-                stage="analysis_failed",
-                progress=100,
-                error=error_message,
-            )
-        except Exception as update_error:
-            print(
-                "Could not update failed job:",
-                update_error,
-            )
-
-        raise
+    main()
