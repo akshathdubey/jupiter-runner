@@ -30,13 +30,13 @@ on:
       tts_rate:
         description: TTS speaking rate
         required: false
-        default: +0%
+        default: "+0%"
         type: string
 
       tts_volume:
         description: TTS volume
         required: false
-        default: +0%
+        default: "+0%"
         type: string
 
 permissions:
@@ -68,6 +68,28 @@ jobs:
 
           uname -a
           python --version
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            pkg-config \
+            libcairo2 \
+            libcairo2-dev \
+            libpango-1.0-0 \
+            libpango1.0-dev \
+            libpangocairo-1.0-0 \
+            libglib2.0-0 \
+            libglib2.0-dev \
+            ffmpeg
+
+      - name: Verify Pango/Cairo
+        run: |
+          pkg-config --modversion pangocairo
+          pkg-config --modversion cairo
+          echo "PANGOCAIRO = OK"
+          echo "CAIRO = OK"
 
       - name: Generate private-core access token
         id: core-token
@@ -122,14 +144,13 @@ jobs:
             pip install -r requirements.txt
           fi
 
-          # Explicit runtime dependencies used by production_pipeline.
           pip install requests
           pip install "manim>=0.19,<0.20"
           pip install edge-tts
 
           pip install -e .
 
-      - name: Verify production imports
+      - name: Verify production dependencies
         env:
           PYTHONPATH: ${{ github.workspace }}/jupiter-core
 
@@ -149,9 +170,7 @@ jobs:
       - name: Run Jupiter render
         env:
           JOB_ID: ${{ inputs.job_id }}
-
           TARGET_MINUTES: ${{ inputs.target_minutes }}
-
           QUALITY: ${{ inputs.quality }}
 
           TTS_VOICE: ${{ inputs.tts_voice }}
