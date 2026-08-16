@@ -7,6 +7,7 @@ on:
         description: "Jupiter job ID"
         required: true
         type: string
+
       quality:
         description: "normal or premium"
         required: true
@@ -15,22 +16,13 @@ on:
         options:
           - normal
           - premium
-      tts_voice:
-        description: "TTS voice"
-        required: true
-        default: "en-US-AriaNeural"
-        type: string
-      tts_rate:
-        description: "TTS rate"
-        required: true
-        default: "+0%"
-        type: string
-      tts_volume:
-        description: "TTS volume"
-        required: true
-        default: "+0%"
-        type: string
 
+      target_minutes:
+        description: "Lesson duration"
+        required: true
+        default: "5"
+        type: string
+      
 permissions:
   contents: read
 
@@ -99,12 +91,17 @@ jobs:
         env:
           JOB_ID: ${{ inputs.job_id }}
           QUALITY: ${{ inputs.quality }}
-          TTS_VOICE: ${{ inputs.tts_voice }}
-          TTS_RATE: ${{ inputs.tts_rate }}
-          TTS_VOLUME: ${{ inputs.tts_volume }}
+          TARGET_MINUTES: ${{ inputs.target_minutes }}
+
+          TTS_VOICE: en-US-AriaNeural
+          TTS_RATE: "+0%"
+          TTS_VOLUME: "+0%"
+
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
           AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
           AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
           AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
+
         run: python runner.py
