@@ -273,5 +273,4 @@ jobs:
           AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
           AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
 
-        run: |
-          python analyze_runner.py'
+        run: python analyze_runner.py
