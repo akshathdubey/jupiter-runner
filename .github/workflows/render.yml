@@ -28,7 +28,10 @@ jobs:
           client-id: ${{ vars.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: akshathdubey
-          repositories: jupiter-core
+          repositories: |
+            jupiter-core
+          permission-contents: read
+          permission-metadata: read
 
       - name: Checkout public runner
         uses: actions/checkout@v4
