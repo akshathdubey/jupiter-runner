@@ -71,20 +71,10 @@ jobs:
           import urllib.request
 
           raw_url = os.environ["SUPABASE_URL"].strip()
-
-          # Accept either:
-          # https://project.supabase.co
-          # or
-          # https://project.supabase.co/rest/v1
           base_url = raw_url.rstrip("/")
 
           if base_url.lower().endswith("/rest/v1"):
               base_url = base_url[:-7].rstrip("/")
-
-          print(
-              "SUPABASE HOST:",
-              urllib.parse.urlparse(base_url).netloc,
-          )
 
           key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
           job_id = os.environ["JOB_ID"]
@@ -113,38 +103,14 @@ jobs:
               },
           )
 
-          try:
-              with urllib.request.urlopen(
-                  request,
-                  timeout=30,
-              ) as response:
-                  print(
-                      "SUPABASE UPDATE STATUS:",
-                      response.status,
-                  )
-
-          except urllib.error.HTTPError as error:
-              body = error.read().decode(
-                  "utf-8",
-                  errors="replace",
-              )
-
+          with urllib.request.urlopen(
+              request,
+              timeout=30,
+          ) as response:
               print(
-                  "SUPABASE HTTP ERROR:",
-                  error.code,
+                  "SUPABASE UPDATE STATUS:",
+                  response.status,
               )
-
-              print(
-                  "SUPABASE RESPONSE:",
-                  body,
-              )
-
-              print(
-                  "REQUEST ENDPOINT:",
-                  endpoint,
-              )
-
-              raise
           PY
 
       - name: Generate private-core access token
@@ -187,18 +153,11 @@ jobs:
               .rstrip("/")
           )
 
-          if base_url.lower().endswith(
-              "/rest/v1"
-          ):
+          if base_url.lower().endswith("/rest/v1"):
               base_url = base_url[:-7].rstrip("/")
 
-          key = os.environ[
-              "SUPABASE_SERVICE_ROLE_KEY"
-          ]
-
-          job_id = os.environ[
-              "JOB_ID"
-          ]
+          key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+          job_id = os.environ["JOB_ID"]
 
           endpoint = (
               f"{base_url}/rest/v1/jobs"
@@ -206,10 +165,8 @@ jobs:
           )
 
           payload = json.dumps({
-              "stage":
-                  "private_core_ready",
-              "progress":
-                  20,
+              "stage": "private_core_ready",
+              "progress": 20,
           }).encode("utf-8")
 
           request = urllib.request.Request(
@@ -218,12 +175,9 @@ jobs:
               data=payload,
               headers={
                   "apikey": key,
-                  "Authorization":
-                      f"Bearer {key}",
-                  "Content-Type":
-                      "application/json",
-                  "Prefer":
-                      "return=minimal",
+                  "Authorization": f"Bearer {key}",
+                  "Content-Type": "application/json",
+                  "Prefer": "return=minimal",
               },
           )
 
@@ -270,7 +224,18 @@ jobs:
       - name: Verify analysis imports
         env:
           PYTHONPATH: ${{ github.workspace }}/jupiter-core
+
+          # IMPORTANT:
+          # classifier/teacher/visual modules instantiate
+          # the private core Settings() during import.
+          AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
+
+          AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
+          AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
+
         run: |
+          set -e
+
           python -c "from app.parsers.pdf import parse_pdf; print('PDF PARSER = OK')"
           python -c "from app.intelligence.classifier import classify_artifact1; print('CLASSIFIER = OK')"
           python -c "from app.intelligence.estimator import estimate_credits; print('ESTIMATOR = OK')"
@@ -280,6 +245,61 @@ jobs:
           python -c "from app.intelligence.visual_reviewer import review_visual_design; print('VISUAL REVIEWER = OK')"
           python -c "from app.intelligence.fact_ledger import build_fact_ledger; print('FACT LEDGER = OK')"
           python -c "from app.intelligence.visual_validator import validate_visual_design; print('VISUAL VALIDATOR = OK')"
+
+      - name: Mark runner ready
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          base_url = (
+              os.environ["SUPABASE_URL"]
+              .strip()
+              .rstrip("/")
+          )
+
+          if base_url.lower().endswith("/rest/v1"):
+              base_url = base_url[:-7].rstrip("/")
+
+          key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+          job_id = os.environ["JOB_ID"]
+
+          endpoint = (
+              f"{base_url}/rest/v1/jobs"
+              f"?id=eq.{job_id}"
+          )
+
+          payload = json.dumps({
+              "stage": "runner_ready",
+              "progress": 25,
+          }).encode("utf-8")
+
+          request = urllib.request.Request(
+              endpoint,
+              method="PATCH",
+              data=payload,
+              headers={
+                  "apikey": key,
+                  "Authorization": f"Bearer {key}",
+                  "Content-Type": "application/json",
+                  "Prefer": "return=minimal",
+              },
+          )
+
+          with urllib.request.urlopen(
+              request,
+              timeout=30,
+          ) as response:
+              print(
+                  "SUPABASE UPDATE STATUS:",
+                  response.status,
+              )
+          PY
 
       - name: Run Jupiter analysis
         env:
