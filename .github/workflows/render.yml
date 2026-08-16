@@ -1,0 +1,83 @@
+﻿name: Jupiter Render
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "Jupiter job ID"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jupiter-render-${{ inputs.job_id }}
+  cancel-in-progress: false
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Generate private-core access token
+        id: core-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: akshathdubey
+          repositories: jupiter-core
+
+      - name: Checkout public runner
+        uses: actions/checkout@v4
+
+      - name: Checkout private Jupiter core
+        uses: actions/checkout@v4
+        with:
+          repository: akshathdubey/jupiter-core
+          token: ${{ steps.core-token.outputs.token }}
+          path: jupiter-core
+          clean: false
+
+      - name: Verify private core
+        run: |
+          test -f jupiter-core/app/intelligence/production_pipeline.py
+          test -f jupiter-core/app/intelligence/manim_generator.py
+          test -f jupiter-core/app/intelligence/media_muxer.py
+          echo "PRIVATE JUPITER CORE AVAILABLE"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ffmpeg \
+            libcairo2-dev \
+            libpango1.0-dev \
+            libpangocairo-1.0-0 \
+            libgdk-pixbuf-2.0-0 \
+            libffi-dev \
+            shared-mime-info \
+            fonts-dejavu \
+            fonts-liberation \
+            fontconfig
+
+      - name: Install Jupiter core dependencies
+        working-directory: jupiter-core
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .
+          pip install "manim>=0.19,<0.20" edge-tts
+
+      - name: Run security test
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+        run: |
+          python runner.py
