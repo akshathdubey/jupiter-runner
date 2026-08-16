@@ -35,16 +35,39 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      - name: Workflow started
+      - name: Runner diagnostics
+        run: |
+          echo "========================================"
+          echo "JUPITER ANALYSIS WORKFLOW STARTED"
+          echo "========================================"
+
+          echo "JOB_ID=${{ inputs.job_id }}"
+          echo "TARGET_MINUTES=${{ inputs.target_minutes }}"
+          echo "QUALITY=${{ inputs.quality }}"
+
+          echo ""
+          echo "RUNNER:"
+          uname -a
+
+          echo ""
+          echo "PYTHON:"
+          python --version || true
+
+          echo ""
+          echo "WORKSPACE:"
+          pwd
+          ls -la
+
+      - name: Mark job as github_started
         env:
           JOB_ID: ${{ inputs.job_id }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           python - <<'PY'
+          import json
           import os
           import urllib.request
-          import json
 
           url = os.environ["SUPABASE_URL"].rstrip("/")
           key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
@@ -55,15 +78,17 @@ jobs:
               f"?id=eq.{job_id}"
           )
 
+          payload = json.dumps({
+              "status": "running",
+              "stage": "github_started",
+              "progress": 10,
+              "error": None,
+          }).encode("utf-8")
+
           request = urllib.request.Request(
               endpoint,
               method="PATCH",
-              data=json.dumps({
-                  "status": "running",
-                  "stage": "github_started",
-                  "progress": 3,
-                  "error": None,
-              }).encode("utf-8"),
+              data=payload,
               headers={
                   "apikey": key,
                   "Authorization": f"Bearer {key}",
@@ -77,13 +102,14 @@ jobs:
               timeout=30,
           ) as response:
               print(
-                  "SUPABASE JOB STARTED:",
+                  "SUPABASE UPDATE STATUS:",
                   response.status,
               )
-          PY
 
-          echo "JUPITER ANALYZE WORKFLOW STARTED"
-          echo "JOB_ID=${{ inputs.job_id }}"
+          print(
+              "JOB MARKED github_started"
+          )
+          PY
 
       - name: Generate private-core access token
         id: core-token
@@ -97,6 +123,53 @@ jobs:
           permission-contents: read
           permission-metadata: read
 
+      - name: Mark private core authentication complete
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          url = os.environ["SUPABASE_URL"].rstrip("/")
+          key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+          job_id = os.environ["JOB_ID"]
+
+          endpoint = (
+              f"{url}/rest/v1/jobs"
+              f"?id=eq.{job_id}"
+          )
+
+          payload = json.dumps({
+              "stage": "private_core_auth",
+              "progress": 15,
+          }).encode("utf-8")
+
+          request = urllib.request.Request(
+              endpoint,
+              method="PATCH",
+              data=payload,
+              headers={
+                  "apikey": key,
+                  "Authorization": f"Bearer {key}",
+                  "Content-Type": "application/json",
+                  "Prefer": "return=minimal",
+              },
+          )
+
+          with urllib.request.urlopen(
+              request,
+              timeout=30,
+          ) as response:
+              print(
+                  "SUPABASE UPDATE STATUS:",
+                  response.status,
+              )
+          PY
+
       - name: Checkout public runner
         uses: actions/checkout@v4
 
@@ -108,14 +181,64 @@ jobs:
           path: jupiter-core
           clean: false
 
+      - name: Mark private core checkout complete
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          url = os.environ["SUPABASE_URL"].rstrip("/")
+          key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+          job_id = os.environ["JOB_ID"]
+
+          endpoint = (
+              f"{url}/rest/v1/jobs"
+              f"?id=eq.{job_id}"
+          )
+
+          payload = json.dumps({
+              "stage": "private_core_ready",
+              "progress": 20,
+          }).encode("utf-8")
+
+          request = urllib.request.Request(
+              endpoint,
+              method="PATCH",
+              data=payload,
+              headers={
+                  "apikey": key,
+                  "Authorization": f"Bearer {key}",
+                  "Content-Type": "application/json",
+                  "Prefer": "return=minimal",
+              },
+          )
+
+          with urllib.request.urlopen(
+              request,
+              timeout=30,
+          ) as response:
+              print(
+                  "SUPABASE UPDATE STATUS:",
+                  response.status,
+              )
+          PY
+
       - name: Verify private core
         run: |
+          set -e
+
           test -f jupiter-core/app/__init__.py
           test -f jupiter-core/app/parsers/pdf.py
           test -f jupiter-core/app/intelligence/classifier.py
           test -f jupiter-core/app/intelligence/teacher.py
           test -f jupiter-core/app/intelligence/visual_designer.py
           test -f jupiter-core/app/intelligence/visual_validator.py
+
           echo "PRIVATE JUPITER CORE = OK"
 
       - name: Set up Python
@@ -141,9 +264,60 @@ jobs:
         run: |
           python -c "from app.parsers.pdf import parse_pdf; print('PDF PARSER = OK')"
           python -c "from app.intelligence.classifier import classify_artifact1; print('CLASSIFIER = OK')"
+          python -c "from app.intelligence.estimator import estimate_credits; print('ESTIMATOR = OK')"
           python -c "from app.intelligence.teacher import create_teaching_plan; print('TEACHER = OK')"
+          python -c "from app.intelligence.teacher_reviewer import review_teaching_plan; print('TEACHER REVIEWER = OK')"
           python -c "from app.intelligence.visual_designer import create_visual_design; print('VISUAL DESIGNER = OK')"
+          python -c "from app.intelligence.visual_reviewer import review_visual_design; print('VISUAL REVIEWER = OK')"
+          python -c "from app.intelligence.fact_ledger import build_fact_ledger; print('FACT LEDGER = OK')"
           python -c "from app.intelligence.visual_validator import validate_visual_design; print('VISUAL VALIDATOR = OK')"
+
+      - name: Mark runner ready
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          url = os.environ["SUPABASE_URL"].rstrip("/")
+          key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+          job_id = os.environ["JOB_ID"]
+
+          endpoint = (
+              f"{url}/rest/v1/jobs"
+              f"?id=eq.{job_id}"
+          )
+
+          payload = json.dumps({
+              "stage": "runner_ready",
+              "progress": 25,
+          }).encode("utf-8")
+
+          request = urllib.request.Request(
+              endpoint,
+              method="PATCH",
+              data=payload,
+              headers={
+                  "apikey": key,
+                  "Authorization": f"Bearer {key}",
+                  "Content-Type": "application/json",
+                  "Prefer": "return=minimal",
+              },
+          )
+
+          with urllib.request.urlopen(
+              request,
+              timeout=30,
+          ) as response:
+              print(
+                  "SUPABASE UPDATE STATUS:",
+                  response.status,
+              )
+          PY
 
       - name: Run Jupiter analysis
         env:
