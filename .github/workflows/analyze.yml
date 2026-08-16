@@ -9,15 +9,13 @@ on:
         type: string
 
       target_minutes:
-        description: Lesson duration in minutes
+        description: Lesson duration
         required: true
-        default: "5"
         type: string
 
       quality:
-        description: Internal quality tier
+        description: Internal Jupiter quality
         required: true
-        default: normal
         type: choice
         options:
           - normal
@@ -32,6 +30,7 @@ concurrency:
 
 jobs:
   analyze:
+    name: Analyze document
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
@@ -61,12 +60,13 @@ jobs:
 
       - name: Verify private core
         run: |
+          test -f jupiter-core/app/__init__.py
           test -f jupiter-core/app/parsers/pdf.py
           test -f jupiter-core/app/intelligence/classifier.py
           test -f jupiter-core/app/intelligence/teacher.py
           test -f jupiter-core/app/intelligence/visual_designer.py
           test -f jupiter-core/app/intelligence/visual_validator.py
-          echo "PRIVATE JUPITER CORE AVAILABLE"
+          echo "PRIVATE JUPITER CORE = OK"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -81,10 +81,21 @@ jobs:
       - name: Install Jupiter core
         working-directory: jupiter-core
         run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -e .
 
-      - name: Run analysis
+      - name: Verify analysis imports
+        env:
+          PYTHONPATH: ${{ github.workspace }}/jupiter-core
+        run: |
+          python -c "from app.parsers.pdf import parse_pdf; print('PDF PARSER = OK')"
+          python -c "from app.intelligence.classifier import classify_artifact1; print('CLASSIFIER = OK')"
+          python -c "from app.intelligence.teacher import create_teaching_plan; print('TEACHER = OK')"
+          python -c "from app.intelligence.visual_designer import create_visual_design; print('VISUAL DESIGNER = OK')"
+          python -c "from app.intelligence.visual_validator import validate_visual_design; print('VISUAL VALIDATOR = OK')"
+
+      - name: Run Jupiter analysis
         env:
           JOB_ID: ${{ inputs.job_id }}
           TARGET_MINUTES: ${{ inputs.target_minutes }}
@@ -97,4 +108,5 @@ jobs:
           AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
           AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
 
-        run: python analyze_runner.py
+        run: |
+          python analyze_runner.py
