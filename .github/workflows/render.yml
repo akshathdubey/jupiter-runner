@@ -4,8 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       job_id:
-        description: "Jupiter job ID"
+        description: "Jupiter test job ID"
         required: true
+        default: "cloud-render-test-001"
         type: string
 
 permissions:
@@ -46,9 +47,10 @@ jobs:
 
       - name: Verify private core
         run: |
-          test -f jupiter-core/app/intelligence/production_pipeline.py
           test -f jupiter-core/app/intelligence/manim_generator.py
-          test -f jupiter-core/app/intelligence/media_muxer.py
+          test -f jupiter-core/app/intelligence/manim_renderer.py
+          test -f jupiter-core/app/intelligence/video_validator.py
+          test -f jupiter-core/fixtures/artifact2_final.json
           echo "PRIVATE JUPITER CORE AVAILABLE"
 
       - name: Set up Python
@@ -79,8 +81,17 @@ jobs:
           pip install -e .
           pip install "manim>=0.19,<0.20" edge-tts
 
-      - name: Run security test
+      - name: Run cloud render test
         env:
           JOB_ID: ${{ inputs.job_id }}
         run: |
           python runner.py
+
+      - name: Upload cloud-rendered video
+        uses: actions/upload-artifact@v4
+        with:
+          name: jupiter-cloud-render-${{ inputs.job_id }}
+          path: |
+            cloud_output/cloud_test.mp4
+            cloud_output/cloud_test_scene.py
+          retention-days: 1
