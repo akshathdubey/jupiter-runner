@@ -9,7 +9,22 @@ from pathlib import Path
 from supabase import create_client
 
 JOB_ID = os.environ["JOB_ID"]
-QUALITY = os.environ.get("QUALITY", "normal").strip().lower()
+
+QUALITY = (
+    os.environ.get(
+        "QUALITY",
+        "normal",
+    )
+    .strip()
+    .lower()
+)
+
+TARGET_MINUTES = int(
+    os.environ.get(
+        "TARGET_MINUTES",
+        "5",
+    )
+)
 TTS_VOICE = os.environ.get("TTS_VOICE", "en-US-AriaNeural")
 TTS_RATE = os.environ.get("TTS_RATE", "+0%")
 TTS_VOLUME = os.environ.get("TTS_VOLUME", "+0%")
@@ -53,7 +68,20 @@ def upload_video(local_path: Path, remote_path: str) -> None:
 
 def main() -> None:
     job = get_job()
+    job_target_minutes = job.get(
+        "target_minutes"
+    )
 
+    if (
+        job_target_minutes is not None
+        and int(job_target_minutes)
+        != TARGET_MINUTES
+    ):
+        raise RuntimeError(
+            "Job duration mismatch: "
+            f"database={job_target_minutes}, "
+            f"workflow={TARGET_MINUTES}"
+        )
     teacher_path = job.get("teacher_path")
     visual_path = job.get("visual_path")
     if not teacher_path or not visual_path:
@@ -61,7 +89,9 @@ def main() -> None:
 
     sys.path.insert(0, str(Path(__file__).resolve().parent / "jupiter-core"))
 
-    from app.intelligence.production_pipeline import generate_final_video
+    from app.intelligence.production_pipeline import (  # type: ignore[import-not-found]
+    generate_final_video,
+)
 
     pipeline_quality = "elite" if QUALITY == "premium" else "normal"
 
