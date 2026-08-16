@@ -83,9 +83,27 @@ jobs:
       - name: Install Jupiter core dependencies
         working-directory: jupiter-core
         run: |
-          pip install -r requirements.txt
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+
+          pip install requests
           pip install -e .
-          pip install "manim>=0.19,<0.20" edge-tts
+
+          pip install "manim>=0.19,<0.20"
+          pip install edge-tts
+
+      - name: Verify production imports
+        env:
+          PYTHONPATH: ${{ github.workspace }}/jupiter-core
+          AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
+          AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
+          AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
+        run: |
+          python -c "import requests; print('REQUESTS = OK')"
+          python -c "from app.intelligence.production_pipeline import generate_final_video; print('PRODUCTION PIPELINE = OK')"
 
       - name: Run Jupiter production pipeline
         env:
