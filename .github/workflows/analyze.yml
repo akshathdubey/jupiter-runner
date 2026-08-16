@@ -40,23 +40,13 @@ jobs:
           echo "========================================"
           echo "JUPITER ANALYSIS WORKFLOW STARTED"
           echo "========================================"
-
           echo "JOB_ID=${{ inputs.job_id }}"
           echo "TARGET_MINUTES=${{ inputs.target_minutes }}"
           echo "QUALITY=${{ inputs.quality }}"
-
           echo ""
-          echo "RUNNER:"
           uname -a
-
-          echo ""
-          echo "PYTHON:"
           python --version
-
-          echo ""
-          echo "WORKSPACE:"
           pwd
-          ls -la
 
       - name: Mark job as github_started
         env:
@@ -70,8 +60,7 @@ jobs:
           import urllib.parse
           import urllib.request
 
-          raw_url = os.environ["SUPABASE_URL"].strip()
-          base_url = raw_url.rstrip("/")
+          base_url = os.environ["SUPABASE_URL"].strip().rstrip("/")
 
           if base_url.lower().endswith("/rest/v1"):
               base_url = base_url[:-7].rstrip("/")
@@ -103,14 +92,8 @@ jobs:
               },
           )
 
-          with urllib.request.urlopen(
-              request,
-              timeout=30,
-          ) as response:
-              print(
-                  "SUPABASE UPDATE STATUS:",
-                  response.status,
-              )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              print("SUPABASE UPDATE STATUS:", response.status)
           PY
 
       - name: Generate private-core access token
@@ -147,11 +130,7 @@ jobs:
           import os
           import urllib.request
 
-          base_url = (
-              os.environ["SUPABASE_URL"]
-              .strip()
-              .rstrip("/")
-          )
+          base_url = os.environ["SUPABASE_URL"].strip().rstrip("/")
 
           if base_url.lower().endswith("/rest/v1"):
               base_url = base_url[:-7].rstrip("/")
@@ -159,10 +138,7 @@ jobs:
           key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
           job_id = os.environ["JOB_ID"]
 
-          endpoint = (
-              f"{base_url}/rest/v1/jobs"
-              f"?id=eq.{job_id}"
-          )
+          endpoint = f"{base_url}/rest/v1/jobs?id=eq.{job_id}"
 
           payload = json.dumps({
               "stage": "private_core_ready",
@@ -181,17 +157,11 @@ jobs:
               },
           )
 
-          with urllib.request.urlopen(
-              request,
-              timeout=30,
-          ) as response:
-              print(
-                  "SUPABASE UPDATE STATUS:",
-                  response.status,
-              )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              print("SUPABASE UPDATE STATUS:", response.status)
           PY
 
-      - name: Verify private core
+      - name: Verify private core files
         run: |
           set -e
 
@@ -214,28 +184,30 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Install Jupiter core
+      - name: Install private core dependencies
         working-directory: jupiter-core
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+
+          # Explicit runtime dependencies used by the private core.
+          pip install requests
+
           pip install -e .
 
-      - name: Verify analysis imports
+      - name: Verify critical Python dependencies
         env:
-          PYTHONPATH: ${{ github.workspace }}/jupiter-core
-
-          # IMPORTANT:
-          # classifier/teacher/visual modules instantiate
-          # the private core Settings() during import.
           AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
-
           AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
           AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
-
+          PYTHONPATH: ${{ github.workspace }}/jupiter-core
         run: |
-          set -e
-
+          python -c "import requests; print('REQUESTS = OK')"
+          python -c "import pydantic; print('PYDANTIC = OK')"
+          python -c "import pydantic_settings; print('PYDANTIC SETTINGS = OK')"
           python -c "from app.parsers.pdf import parse_pdf; print('PDF PARSER = OK')"
           python -c "from app.intelligence.classifier import classify_artifact1; print('CLASSIFIER = OK')"
           python -c "from app.intelligence.estimator import estimate_credits; print('ESTIMATOR = OK')"
@@ -257,11 +229,7 @@ jobs:
           import os
           import urllib.request
 
-          base_url = (
-              os.environ["SUPABASE_URL"]
-              .strip()
-              .rstrip("/")
-          )
+          base_url = os.environ["SUPABASE_URL"].strip().rstrip("/")
 
           if base_url.lower().endswith("/rest/v1"):
               base_url = base_url[:-7].rstrip("/")
@@ -269,10 +237,7 @@ jobs:
           key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
           job_id = os.environ["JOB_ID"]
 
-          endpoint = (
-              f"{base_url}/rest/v1/jobs"
-              f"?id=eq.{job_id}"
-          )
+          endpoint = f"{base_url}/rest/v1/jobs?id=eq.{job_id}"
 
           payload = json.dumps({
               "stage": "runner_ready",
@@ -291,14 +256,8 @@ jobs:
               },
           )
 
-          with urllib.request.urlopen(
-              request,
-              timeout=30,
-          ) as response:
-              print(
-                  "SUPABASE UPDATE STATUS:",
-                  response.status,
-              )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              print("SUPABASE UPDATE STATUS:", response.status)
           PY
 
       - name: Run Jupiter analysis
@@ -315,4 +274,4 @@ jobs:
           AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
 
         run: |
-          python analyze_runner.py
+          python analyze_runner.py'
