@@ -1,148 +1,128 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import json
+import os
 import sys
+import tempfile
 from pathlib import Path
+
+from supabase import create_client
+
+JOB_ID = os.environ["JOB_ID"]
+QUALITY = os.environ.get("QUALITY", "normal").strip().lower()
+TTS_VOICE = os.environ.get("TTS_VOICE", "en-US-AriaNeural")
+TTS_RATE = os.environ.get("TTS_RATE", "+0%")
+TTS_VOLUME = os.environ.get("TTS_VOLUME", "+0%")
+SUPABASE_URL = os.environ["SUPABASE_URL"]
+SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+BUCKET = "jupiter-temp"
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+def update_job(**values) -> None:
+    supabase.table("jobs").update(values).eq("id", JOB_ID).execute()
+
+
+def get_job() -> dict:
+    result = supabase.table("jobs").select("*").eq("id", JOB_ID).single().execute()
+    if not result.data:
+        raise RuntimeError(f"Job {JOB_ID} was not found.")
+    return result.data
+
+
+def download_object(remote_path: str, local_path: Path) -> None:
+    local_path.write_bytes(
+        supabase.storage.from_(BUCKET).download(remote_path)
+    )
+
+
+def upload_video(local_path: Path, remote_path: str) -> None:
+    result = supabase.storage.from_(BUCKET).upload(
+        remote_path,
+        local_path.read_bytes(),
+        {
+            "content-type": "video/mp4",
+            "cache-control": "no-store",
+            "upsert": "true",
+        },
+    )
+    if getattr(result, "error", None):
+        raise RuntimeError(f"Video upload failed: {result.error}")
 
 
 def main() -> None:
-    root = Path(__file__).resolve().parent
-    core = root / "jupiter-core"
+    job = get_job()
 
-    if not core.is_dir():
-        raise RuntimeError(
-            "Private Jupiter core was not checked out."
+    teacher_path = job.get("teacher_path")
+    visual_path = job.get("visual_path")
+    if not teacher_path or not visual_path:
+        raise RuntimeError("Job is missing input artifact paths.")
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "jupiter-core"))
+
+    from app.intelligence.production_pipeline import generate_final_video
+
+    pipeline_quality = "elite" if QUALITY == "premium" else "normal"
+
+    with tempfile.TemporaryDirectory(prefix=f"jupiter-{JOB_ID}-") as temp_dir:
+        work = Path(temp_dir)
+        teacher_file = work / "artifact2.json"
+        visual_file = work / "artifact3.json"
+        output_file = work / "final.mp4"
+
+        update_job(status="running", stage="downloading_inputs", progress=3)
+        download_object(teacher_path, teacher_file)
+        download_object(visual_path, visual_file)
+
+        teacher = json.loads(teacher_file.read_text(encoding="utf-8"))
+        visual = json.loads(visual_file.read_text(encoding="utf-8"))
+
+        update_job(stage="production_pipeline", progress=5)
+
+        result = generate_final_video(
+            teacher,
+            visual,
+            output_file,
+            quality=pipeline_quality,
+            tts_voice=TTS_VOICE,
+            tts_rate=TTS_RATE,
+            tts_volume=TTS_VOLUME,
+            max_repair_cycles=2,
+            render_timeout_seconds=1200,
         )
 
-    fixture = (
-        core
-        / "fixtures"
-        / "artifact2_final.json"
-    )
-
-    if not fixture.is_file():
-        raise RuntimeError(
-            f"Missing private fixture: {fixture}"
-        )
-
-    production_pipeline = (
-        core
-        / "app"
-        / "intelligence"
-        / "production_pipeline.py"
-    )
-
-    if not production_pipeline.is_file():
-        raise RuntimeError(
-            "Private production pipeline is missing."
-        )
-
-    sys.path.insert(
-        0,
-        str(core),
-    )
-
-    from app.intelligence.manim_generator import (
-        compile_manim,
-    )
-    from app.intelligence.manim_renderer import (
-        render_manim,
-    )
-    from app.intelligence.video_validator import (
-        validate_video,
-    )
-
-    import json
-
-    design = json.loads(
-        fixture.read_text(
-            encoding="utf-8"
-        )
-    )
-
-    output_dir = root / "cloud_output"
-    output_dir.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    source = compile_manim(
-        design
-    )
-
-    source_path = (
-        output_dir
-        / "cloud_test_scene.py"
-    )
-
-    source_path.write_text(
-        source,
-        encoding="utf-8",
-    )
-
-    output_path = (
-        output_dir
-        / "cloud_test.mp4"
-    )
-
-    print("JUPITER CLOUD RENDER TEST")
-    print("PRIVATE CORE = PRESENT")
-    print("FIXTURE = PRESENT")
-    print(
-        "SCENES =",
-        len(
-            design.get(
-                "scenes",
-                [],
+        if not result.get("passed"):
+            message = result.get("message", "Production pipeline failed.")
+            update_job(
+                status="failed",
+                stage=result.get("failed_stage", "production"),
+                progress=100,
+                error=message,
+                completed_at="now()",
             )
-        ),
-    )
+            raise RuntimeError(message)
 
-    render_result = render_manim(
-        source=source,
-        output_path=output_path,
-        quality="normal",
-        timeout_seconds=1200,
-    )
-
-    print(
-        "RENDER RESULT =",
-        render_result,
-    )
-
-    if not render_result.get(
-        "passed"
-    ):
-        raise RuntimeError(
-            render_result.get(
-                "message",
-                "Manim render failed.",
+        if not output_file.exists():
+            raise RuntimeError(
+                "Production reported success but final.mp4 is missing."
             )
+
+        update_job(stage="uploading", progress=97)
+
+        remote_output = f"jobs/{JOB_ID}/final.mp4"
+        upload_video(output_file, remote_output)
+
+        update_job(
+            status="completed",
+            stage="completed",
+            progress=100,
+            output_path=remote_output,
+            error=None,
         )
 
-    validation = validate_video(
-        output_path
-    )
-
-    print(
-        "VIDEO VALIDATION =",
-        validation,
-    )
-
-    if not validation.get(
-        "passed"
-    ):
-        raise RuntimeError(
-            "Cloud-rendered video failed validation."
-        )
-
-    print("")
-    print(
-        "JUPITER CLOUD RENDER = SUCCESS"
-    )
-    print(
-        "OUTPUT =",
-        output_path,
-    )
+        print("JUPITER PRODUCTION = SUCCESS")
+        print(f"OUTPUT = {remote_output}")
 
 
 if __name__ == "__main__":
