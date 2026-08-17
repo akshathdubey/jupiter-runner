@@ -35,32 +35,132 @@ jobs:
     timeout-minutes: 120
 
     steps:
+      # ==========================================================
+      # DIAGNOSTICS
+      # ==========================================================
+
       - name: Runner diagnostics
+        shell: bash
         run: |
+          set -euo pipefail
+
           echo "========================================"
           echo "JUPITER ANALYSIS WORKFLOW STARTED"
           echo "========================================"
+
           echo "JOB_ID=${{ inputs.job_id }}"
           echo "TARGET_MINUTES=${{ inputs.target_minutes }}"
           echo "QUALITY=${{ inputs.quality }}"
           echo ""
+
           uname -a
           python --version
           pwd
+
+      # ==========================================================
+      # PUBLIC RUNNER REPOSITORY
+      # ==========================================================
+
+      - name: Checkout public runner
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # ==========================================================
+      # PRIVATE CORE ACCESS TOKEN
+      # ==========================================================
+
+      - name: Generate private-core access token
+        id: core-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: akshathdubey
+          repositories: |
+            jupiter-core
+          permission-contents: read
+          permission-metadata: read
+
+      # ==========================================================
+      # PRIVATE CORE
+      # ==========================================================
+
+      - name: Checkout private Jupiter core
+        uses: actions/checkout@v4
+        with:
+          repository: akshathdubey/jupiter-core
+          token: ${{ steps.core-token.outputs.token }}
+          path: jupiter-core
+          fetch-depth: 1
+          clean: true
+
+      # ==========================================================
+      # VERIFY REPOSITORY LAYOUT
+      # ==========================================================
+
+      - name: Verify Jupiter repository layout
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "VERIFYING JUPITER REPOSITORY LAYOUT"
+          echo "========================================"
+
+          echo "Workspace:"
+          pwd
+
+          echo ""
+          echo "Runner files:"
+          ls -la
+
+          echo ""
+          echo "Private core directory:"
+          test -d "./jupiter-core"
+          ls -la "./jupiter-core"
+
+          echo ""
+          echo "Required private core files:"
+
+          test -f "./jupiter-core/app/__init__.py"
+          test -f "./jupiter-core/app/config.py"
+          test -f "./jupiter-core/app/parsers/pdf.py"
+          test -f "./jupiter-core/app/intelligence/classifier.py"
+          test -f "./jupiter-core/app/intelligence/teacher.py"
+          test -f "./jupiter-core/app/intelligence/teacher_reviewer.py"
+          test -f "./jupiter-core/app/intelligence/visual_designer.py"
+          test -f "./jupiter-core/app/intelligence/visual_reviewer.py"
+          test -f "./jupiter-core/app/intelligence/fact_ledger.py"
+          test -f "./jupiter-core/app/intelligence/visual_validator.py"
+
+          echo ""
+          echo "PRIVATE JUPITER CORE = OK"
+
+      # ==========================================================
+      # DATABASE: GITHUB STARTED
+      # ==========================================================
 
       - name: Mark job as github_started
         env:
           JOB_ID: ${{ inputs.job_id }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           python - <<'PY'
           import json
           import os
           import urllib.parse
           import urllib.request
 
-          base_url = os.environ["SUPABASE_URL"].strip().rstrip("/")
+          base_url = (
+              os.environ["SUPABASE_URL"]
+              .strip()
+              .rstrip("/")
+          )
 
           if base_url.lower().endswith("/rest/v1"):
               base_url = base_url[:-7].rstrip("/")
@@ -92,45 +192,39 @@ jobs:
               },
           )
 
-          with urllib.request.urlopen(request, timeout=30) as response:
-              print("SUPABASE UPDATE STATUS:", response.status)
+          with urllib.request.urlopen(
+              request,
+              timeout=30,
+          ) as response:
+              print(
+                  "SUPABASE UPDATE STATUS:",
+                  response.status,
+              )
           PY
 
-      - name: Generate private-core access token
-        id: core-token
-        uses: actions/create-github-app-token@v3
-        with:
-          client-id: ${{ vars.APP_CLIENT_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: akshathdubey
-          repositories: |
-            jupiter-core
-          permission-contents: read
-          permission-metadata: read
-
-      - name: Checkout public runner
-        uses: actions/checkout@v4
-
-      - name: Checkout private Jupiter core
-        uses: actions/checkout@v4
-        with:
-          repository: akshathdubey/jupiter-core
-          token: ${{ steps.core-token.outputs.token }}
-          path: jupiter-core
-          clean: false
+      # ==========================================================
+      # DATABASE: PRIVATE CORE READY
+      # ==========================================================
 
       - name: Mark private core ready
         env:
           JOB_ID: ${{ inputs.job_id }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           python - <<'PY'
           import json
           import os
           import urllib.request
 
-          base_url = os.environ["SUPABASE_URL"].strip().rstrip("/")
+          base_url = (
+              os.environ["SUPABASE_URL"]
+              .strip()
+              .rstrip("/")
+          )
 
           if base_url.lower().endswith("/rest/v1"):
               base_url = base_url[:-7].rstrip("/")
@@ -138,7 +232,10 @@ jobs:
           key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
           job_id = os.environ["JOB_ID"]
 
-          endpoint = f"{base_url}/rest/v1/jobs?id=eq.{job_id}"
+          endpoint = (
+              f"{base_url}/rest/v1/jobs"
+              f"?id=eq.{job_id}"
+          )
 
           payload = json.dumps({
               "stage": "private_core_ready",
@@ -157,57 +254,108 @@ jobs:
               },
           )
 
-          with urllib.request.urlopen(request, timeout=30) as response:
-              print("SUPABASE UPDATE STATUS:", response.status)
+          with urllib.request.urlopen(
+              request,
+              timeout=30,
+          ) as response:
+              print(
+                  "SUPABASE UPDATE STATUS:",
+                  response.status,
+              )
           PY
 
-      - name: Verify private core files
-        run: |
-          set -e
-
-          test -f jupiter-core/app/__init__.py
-          test -f jupiter-core/app/parsers/pdf.py
-          test -f jupiter-core/app/intelligence/classifier.py
-          test -f jupiter-core/app/intelligence/teacher.py
-          test -f jupiter-core/app/intelligence/visual_designer.py
-          test -f jupiter-core/app/intelligence/visual_validator.py
-
-          echo "PRIVATE JUPITER CORE = OK"
+      # ==========================================================
+      # PYTHON
+      # ==========================================================
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
+
+      # ==========================================================
+      # RUNTIME DIRECTORIES
+      # ==========================================================
+
+      - name: Prepare Jupiter runtime directories
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p uploads
+          mkdir -p jobs
+
+          echo "========================================"
+          echo "RUNTIME DIRECTORIES"
+          echo "========================================"
+
+          echo "Workspace:"
+          pwd
+
+          echo ""
+          echo "Uploads:"
+          ls -ld uploads
+
+          echo ""
+          echo "Jobs:"
+          ls -ld jobs
+
+          echo ""
+          echo "Private core:"
+          ls -ld jupiter-core
+
+      # ==========================================================
+      # RUNNER DEPENDENCIES
+      # ==========================================================
 
       - name: Install runner dependencies
+        shell: bash
         run: |
+          set -euo pipefail
+
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # ==========================================================
+      # PRIVATE CORE DEPENDENCIES
+      # ==========================================================
+
       - name: Install private core dependencies
         working-directory: jupiter-core
+        shell: bash
         run: |
+          set -euo pipefail
+
           python -m pip install --upgrade pip
 
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           fi
 
-          # Explicit runtime dependencies used by the private core.
           pip install requests
 
           pip install -e .
+
+      # ==========================================================
+      # CRITICAL IMPORT TESTS
+      # ==========================================================
 
       - name: Verify critical Python dependencies
         env:
           AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
           AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
           AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
-          PYTHONPATH: ${{ github.workspace }}/jupiter-core
+          PYTHONPATH: ${{ github.workspace }}/jupiter-runner/jupiter-core
+        shell: bash
         run: |
+          set -euo pipefail
+
           python -c "import requests; print('REQUESTS = OK')"
           python -c "import pydantic; print('PYDANTIC = OK')"
           python -c "import pydantic_settings; print('PYDANTIC SETTINGS = OK')"
+
+          python -c "from app.api.blueprint import build_lesson_blueprint; print('BLUEPRINT = OK')"
           python -c "from app.parsers.pdf import parse_pdf; print('PDF PARSER = OK')"
           python -c "from app.intelligence.classifier import classify_artifact1; print('CLASSIFIER = OK')"
           python -c "from app.intelligence.estimator import estimate_credits; print('ESTIMATOR = OK')"
@@ -218,18 +366,34 @@ jobs:
           python -c "from app.intelligence.fact_ledger import build_fact_ledger; print('FACT LEDGER = OK')"
           python -c "from app.intelligence.visual_validator import validate_visual_design; print('VISUAL VALIDATOR = OK')"
 
+          python -m py_compile analyze_runner.py
+
+          echo ""
+          echo "ALL JUPITER IMPORTS = OK"
+
+      # ==========================================================
+      # DATABASE: RUNNER READY
+      # ==========================================================
+
       - name: Mark runner ready
         env:
           JOB_ID: ${{ inputs.job_id }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           python - <<'PY'
           import json
           import os
           import urllib.request
 
-          base_url = os.environ["SUPABASE_URL"].strip().rstrip("/")
+          base_url = (
+              os.environ["SUPABASE_URL"]
+              .strip()
+              .rstrip("/")
+          )
 
           if base_url.lower().endswith("/rest/v1"):
               base_url = base_url[:-7].rstrip("/")
@@ -237,7 +401,10 @@ jobs:
           key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
           job_id = os.environ["JOB_ID"]
 
-          endpoint = f"{base_url}/rest/v1/jobs?id=eq.{job_id}"
+          endpoint = (
+              f"{base_url}/rest/v1/jobs"
+              f"?id=eq.{job_id}"
+          )
 
           payload = json.dumps({
               "stage": "runner_ready",
@@ -256,34 +423,60 @@ jobs:
               },
           )
 
-          with urllib.request.urlopen(request, timeout=30) as response:
-              print("SUPABASE UPDATE STATUS:", response.status)
+          with urllib.request.urlopen(
+              request,
+              timeout=30,
+          ) as response:
+              print(
+                  "SUPABASE UPDATE STATUS:",
+                  response.status,
+              )
           PY
 
-      - name: Prepare Jupiter runtime directories
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mkdir -p uploads
-          mkdir -p jobs
-
-          echo "Runner workspace:"
-          pwd
-
-          echo "Uploads directory:"
-          ls -ld uploads
-
-          echo "Jobs directory:"
-          ls -ld jobs
+      # ==========================================================
+      # ANALYSIS
+      # ==========================================================
 
       - name: Run Jupiter analysis
         env:
           JOB_ID: ${{ inputs.job_id }}
           TARGET_MINUTES: ${{ inputs.target_minutes }}
           QUALITY: ${{ inputs.quality }}
+
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
           AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
+          AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
+          AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
+
+          PYTHONPATH: ${{ github.workspace }}/jupiter-runner/jupiter-core
+        shell: bash
         run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "RUNNING JUPITER ANALYSIS"
+          echo "========================================"
+
+          echo "JOB_ID=${JOB_ID}"
+          echo "TARGET_MINUTES=${TARGET_MINUTES}"
+          echo "QUALITY=${QUALITY}"
+
+          echo ""
+          echo "Core:"
+          test -d "./jupiter-core"
+          test -f "./jupiter-core/app/__init__.py"
+
+          echo "Core checkout verified."
+
+          echo ""
+          echo "Runtime:"
+          test -d "./uploads"
+          test -d "./jobs"
+
+          echo "Runtime directories verified."
+
+          echo ""
           python analyze_runner.py
+          
