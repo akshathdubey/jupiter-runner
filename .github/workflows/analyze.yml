@@ -108,35 +108,24 @@ jobs:
           echo "VERIFYING JUPITER REPOSITORY LAYOUT"
           echo "========================================"
 
-          echo "Workspace:"
-          pwd
-
-          echo ""
-          echo "Runner files:"
-          ls -la
-
-          echo ""
-          echo "Private core directory:"
           test -d "./jupiter-core"
-          ls -la "./jupiter-core"
-
-          echo ""
-          echo "Required private core files:"
 
           test -f "./jupiter-core/app/__init__.py"
           test -f "./jupiter-core/app/config.py"
+          test -f "./jupiter-core/app/pricing_template.json"
+
           test -f "./jupiter-core/app/parsers/pdf.py"
+
           test -f "./jupiter-core/app/intelligence/classifier.py"
           test -f "./jupiter-core/app/intelligence/teacher.py"
           test -f "./jupiter-core/app/intelligence/teacher_reviewer.py"
           test -f "./jupiter-core/app/intelligence/visual_designer.py"
           test -f "./jupiter-core/app/intelligence/visual_reviewer.py"
-          test -f "./jupiter-core/app/intelligence/fact_ledger.py"
           test -f "./jupiter-core/app/intelligence/visual_validator.py"
+          test -f "./jupiter-core/app/intelligence/pricing.py"
+          test -f "./jupiter-core/app/intelligence/llm_gateway.py"
 
-          echo ""
           echo "PRIVATE JUPITER CORE = OK"
-
       # ==========================================================
       # DATABASE: GITHUB STARTED
       # ==========================================================
@@ -479,4 +468,3 @@ jobs:
 
           echo ""
           python analyze_runner.py
-          
