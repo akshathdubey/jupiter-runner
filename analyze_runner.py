@@ -3,35 +3,125 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
 from pathlib import Path
 
+from supabase import create_client
+
 
 # ============================================================
-# JUPITER RUNNER / PRIVATE CORE BOOTSTRAP
+# CONFIGURATION
 # ============================================================
 
-RUNNER_ROOT = Path(__file__).resolve().parent
-JUPITER_ROOT = RUNNER_ROOT.parent
-CORE_ROOT = JUPITER_ROOT / "jupiter-core"
+JOB_ID = os.environ["JOB_ID"]
 
-if not CORE_ROOT.exists():
-    raise RuntimeError(
-        "Private jupiter-core repository was not found.\n"
-        f"Expected path: {CORE_ROOT}"
+TARGET_MINUTES = int(
+    os.environ.get(
+        "TARGET_MINUTES",
+        "5",
+    )
+)
+
+QUALITY = (
+    os.environ.get(
+        "QUALITY",
+        "normal",
+    )
+    .strip()
+    .lower()
+)
+
+if QUALITY == "premium":
+    QUALITY = "elite"
+
+SUPABASE_URL = os.environ[
+    "SUPABASE_URL"
+]
+
+SUPABASE_KEY = os.environ[
+    "SUPABASE_SERVICE_ROLE_KEY"
+]
+
+BUCKET = "jupiter-temp"
+
+
+# ============================================================
+# PATHS
+# ============================================================
+
+RUNNER_ROOT = (
+    Path(__file__)
+    .resolve()
+    .parent
+)
+
+# GitHub Actions layout:
+#
+# jupiter-runner/
+# ├── analyze_runner.py
+# └── jupiter-core/
+#
+# Local layout:
+#
+# jupiter/
+# ├── jupiter-runner/
+# └── jupiter-core/
+
+CORE_CANDIDATES = [
+    RUNNER_ROOT / "jupiter-core",
+    RUNNER_ROOT.parent / "jupiter-core",
+]
+
+
+CORE_ROOT: Path | None = None
+
+for candidate in CORE_CANDIDATES:
+    if (
+        candidate.exists()
+        and (
+            candidate / "app"
+        ).exists()
+    ):
+        CORE_ROOT = candidate
+        break
+
+
+if CORE_ROOT is None:
+    searched = "\n".join(
+        f"  - {p}"
+        for p in CORE_CANDIDATES
     )
 
-CORE_PATH = str(CORE_ROOT)
+    raise RuntimeError(
+        "Private jupiter-core repository was not found.\n"
+        "Searched:\n"
+        f"{searched}\n\n"
+        "The GitHub Actions workflow must checkout "
+        "jupiter-core into the runner workspace."
+    )
+
+
+CORE_PATH = str(
+    CORE_ROOT
+)
 
 if CORE_PATH not in sys.path:
-    sys.path.insert(0, CORE_PATH)
+    sys.path.insert(
+        0,
+        CORE_PATH,
+    )
 
 
 # ============================================================
-# IMPORT PRIVATE JUPITER CORE
+# PRIVATE JUPITER CORE IMPORTS
 # ============================================================
 
-from app.parsers.pdf import parse_pdf
+from app.api.blueprint import (
+    build_lesson_blueprint,
+)
+
+from app.parsers.pdf import (
+    parse_pdf,
+)
 
 from app.intelligence.classifier import (
     classify_artifact1,
@@ -65,35 +155,82 @@ from app.intelligence.visual_validator import (
     validate_visual_design,
 )
 
-from app.api.blueprint import (
-    build_lesson_blueprint,
+
+# ============================================================
+# RUNTIME DIRECTORIES
+# ============================================================
+
+UPLOADS_DIR = (
+    RUNNER_ROOT
+    / "uploads"
+)
+
+UPLOADS_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+JOBS_DIR = (
+    RUNNER_ROOT
+    / "jobs"
+)
+
+JOBS_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
 )
 
 
-JOB_ID = os.environ["JOB_ID"]
-
-TARGET_MINUTES = int(
-    os.environ.get(
-        "TARGET_MINUTES",
-        "5",
-    )
+# IMPORTANT:
+# parse_pdf() currently writes paths such as:
+#
+# uploads/source-vit_p3_i0.png
+#
+# Therefore relative filesystem paths must resolve from the
+# runner directory.
+os.chdir(
+    RUNNER_ROOT
 )
 
-QUALITY = (
-    os.environ.get(
-        "QUALITY",
-        "normal",
-    )
-    .strip()
-    .lower()
+
+print(
+    "========================================"
+)
+print(
+    "       JUPITER CLOUD ANALYSIS"
+)
+print(
+    "========================================"
 )
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+print(
+    f"JOB_ID         = {JOB_ID}"
+)
 
-BUCKET = "jupiter-temp"
+print(
+    f"TARGET_MINUTES = {TARGET_MINUTES}"
+)
 
-from supabase import create_client
+print(
+    f"QUALITY        = {QUALITY}"
+)
+
+print(
+    f"RUNNER_ROOT    = {RUNNER_ROOT}"
+)
+
+print(
+    f"CORE_ROOT      = {CORE_ROOT}"
+)
+
+print(
+    f"UPLOADS_DIR    = {UPLOADS_DIR}"
+)
+
+
+# ============================================================
+# SUPABASE
+# ============================================================
 
 supabase = create_client(
     SUPABASE_URL,
@@ -102,54 +239,20 @@ supabase = create_client(
 
 
 # ============================================================
-# RUNTIME DIRECTORIES
+# DATABASE HELPERS
 # ============================================================
 
-# IMPORTANT:
-# The PDF parser creates extracted images such as:
-#
-# uploads/source-vit_p3_i0.png
-#
-# GitHub Actions starts with a clean workspace, so this directory
-# MUST exist before parse_pdf() is called.
-
-UPLOADS_DIR = RUNNER_ROOT / "uploads"
-UPLOADS_DIR.mkdir(
-    parents=True,
-    exist_ok=True,
-)
-
-JOBS_DIR = RUNNER_ROOT / "jobs"
-JOBS_DIR.mkdir(
-    parents=True,
-    exist_ok=True,
-)
-
-# Ensure relative paths inside the parser resolve from the runner
-# root regardless of the shell/workflow working directory.
-os.chdir(RUNNER_ROOT)
-
-print(
-    f"Runner root: {RUNNER_ROOT}"
-)
-print(
-    f"Core root: {CORE_ROOT}"
-)
-print(
-    f"Uploads directory: {UPLOADS_DIR}"
-)
-
-
-# ============================================================
-# SUPABASE HELPERS
-# ============================================================
-
-def update_job(**values) -> None:
+def update_job(
+    **values,
+) -> None:
     (
         supabase
         .table("jobs")
         .update(values)
-        .eq("id", JOB_ID)
+        .eq(
+            "id",
+            JOB_ID,
+        )
         .execute()
     )
 
@@ -159,18 +262,25 @@ def get_job() -> dict:
         supabase
         .table("jobs")
         .select("*")
-        .eq("id", JOB_ID)
+        .eq(
+            "id",
+            JOB_ID,
+        )
         .single()
         .execute()
     )
 
     if not result.data:
         raise RuntimeError(
-            f"Analysis job {JOB_ID} not found."
+            f"Analysis job {JOB_ID} was not found."
         )
 
     return result.data
 
+
+# ============================================================
+# STORAGE HELPERS
+# ============================================================
 
 def download_object(
     remote_path: str,
@@ -180,7 +290,9 @@ def download_object(
         supabase
         .storage
         .from_(BUCKET)
-        .download(remote_path)
+        .download(
+            remote_path
+        )
     )
 
     local_path.parent.mkdir(
@@ -188,7 +300,9 @@ def download_object(
         exist_ok=True,
     )
 
-    local_path.write_bytes(data)
+    local_path.write_bytes(
+        data
+    )
 
 
 def upload_json(
@@ -200,7 +314,9 @@ def upload_json(
         indent=2,
         ensure_ascii=False,
         default=str,
-    ).encode("utf-8")
+    ).encode(
+        "utf-8"
+    )
 
     (
         supabase
@@ -210,19 +326,42 @@ def upload_json(
             remote_path,
             payload,
             {
-                "content-type": "application/json",
-                "cache-control": "no-store",
+                "content-type": (
+                    "application/json"
+                ),
+                "cache-control": (
+                    "no-store"
+                ),
                 "upsert": "true",
             },
         )
     )
 
 
+def delete_storage_object(
+    remote_path: str,
+) -> None:
+    try:
+        (
+            supabase
+            .storage
+            .from_(BUCKET)
+            .remove(
+                [remote_path]
+            )
+        )
+    except Exception as exc:
+        print(
+            "Storage cleanup warning:",
+            exc,
+        )
+
+
 # ============================================================
 # SOURCE METADATA
 # ============================================================
 
-def _extract_page_count(
+def extract_page_count(
     artifact: dict,
 ) -> int:
     document = artifact.get(
@@ -255,7 +394,15 @@ def _extract_page_count(
             collection_name,
             [],
         ):
-            page = item.get("page")
+            if not isinstance(
+                item,
+                dict,
+            ):
+                continue
+
+            page = item.get(
+                "page"
+            )
 
             if isinstance(
                 page,
@@ -270,28 +417,29 @@ def _extract_page_count(
 
 
 # ============================================================
+# LOCAL CLEANUP
+# ============================================================
+
+def cleanup_runtime_files() -> None:
+    try:
+        for path in UPLOADS_DIR.iterdir():
+            if path.is_file():
+                path.unlink(
+                    missing_ok=True
+                )
+
+    except Exception as exc:
+        print(
+            "Uploads cleanup warning:",
+            exc,
+        )
+
+
+# ============================================================
 # MAIN
 # ============================================================
 
 def main() -> None:
-    print(
-        "========================================"
-    )
-    print(
-        "       JUPITER CLOUD ANALYSIS"
-    )
-    print(
-        "========================================"
-    )
-    print(
-        f"JOB_ID         = {JOB_ID}"
-    )
-    print(
-        f"TARGET_MINUTES = {TARGET_MINUTES}"
-    )
-    print(
-        f"QUALITY        = {QUALITY}"
-    )
 
     job = get_job()
 
@@ -310,7 +458,9 @@ def main() -> None:
 
     if (
         db_target_minutes is not None
-        and int(db_target_minutes)
+        and int(
+            db_target_minutes
+        )
         != TARGET_MINUTES
     ):
         raise RuntimeError(
@@ -322,6 +472,12 @@ def main() -> None:
     db_quality = (
         job.get("quality")
         or QUALITY
+    )
+
+    db_quality = (
+        str(db_quality)
+        .strip()
+        .lower()
     )
 
     if db_quality == "premium":
@@ -336,22 +492,25 @@ def main() -> None:
         )
 
     # --------------------------------------------------------
-    # Download source
+    # START
     # --------------------------------------------------------
 
     update_job(
         status="running",
-        stage="source_parsing",
-        progress=10,
-    )
-
-    source = (
-        RUNNER_ROOT
-        / Path(document_path).name
+        stage="downloading_source",
+        progress=5,
+        error=None,
     )
 
     print(
         f"Downloading source: {document_path}"
+    )
+
+    source = (
+        RUNNER_ROOT
+        / Path(
+            document_path
+        ).name
     )
 
     download_object(
@@ -360,23 +519,26 @@ def main() -> None:
     )
 
     print(
-        f"Source file: {source.name}"
+        f"Source file: {source}"
     )
 
     # --------------------------------------------------------
-    # Parse source
+    # PARSE
     # --------------------------------------------------------
 
-    print(
-        f"Uploads directory exists: "
-        f"{UPLOADS_DIR.exists()}"
+    update_job(
+        stage="source_parsing",
+        progress=10,
     )
 
     print(
-        "Parsing source document..."
+        "Parsing source..."
     )
 
-    suffix = source.suffix.lower()
+    suffix = (
+        source.suffix
+        .lower()
+    )
 
     if suffix == ".pdf":
 
@@ -415,10 +577,10 @@ def main() -> None:
 
     else:
         raise RuntimeError(
-            "MVP accepts PDF and TXT files only."
+            "Jupiter currently accepts PDF and TXT sources."
         )
 
-    page_count = _extract_page_count(
+    page_count = extract_page_count(
         artifact
     )
 
@@ -427,12 +589,12 @@ def main() -> None:
     )
 
     # --------------------------------------------------------
-    # Artifact 1 / classification
+    # ARTIFACT 1
     # --------------------------------------------------------
 
     update_job(
         stage="source_analysis",
-        progress=20,
+        progress=15,
     )
 
     print(
@@ -464,17 +626,17 @@ def main() -> None:
 
     fact_ledger = (
         build_fact_ledger(
-            classification,
+            classification
         )
     )
 
     # --------------------------------------------------------
-    # Teacher
+    # TEACHER
     # --------------------------------------------------------
 
     update_job(
         stage="teacher_plan",
-        progress=40,
+        progress=35,
     )
 
     print(
@@ -502,12 +664,12 @@ def main() -> None:
     )
 
     # --------------------------------------------------------
-    # Visual Design
+    # VISUAL DESIGN
     # --------------------------------------------------------
 
     update_job(
         stage="visual_design",
-        progress=58,
+        progress=52,
     )
 
     print(
@@ -524,12 +686,12 @@ def main() -> None:
     )
 
     # --------------------------------------------------------
-    # Visual validation
+    # VISUAL VALIDATION
     # --------------------------------------------------------
 
     update_job(
         stage="visual_validation",
-        progress=72,
+        progress=67,
     )
 
     print(
@@ -545,7 +707,7 @@ def main() -> None:
     )
 
     # --------------------------------------------------------
-    # Visual review
+    # VISUAL REVIEW
     # --------------------------------------------------------
 
     visual_review = None
@@ -556,7 +718,7 @@ def main() -> None:
 
         update_job(
             stage="visual_review",
-            progress=82,
+            progress=77,
         )
 
         print(
@@ -572,15 +734,12 @@ def main() -> None:
         )
 
     # --------------------------------------------------------
-    # Lesson Blueprint
-    #
-    # No AI call.
-    # No additional credits.
+    # BLUEPRINT
     # --------------------------------------------------------
 
     update_job(
         stage="building_blueprint",
-        progress=88,
+        progress=85,
     )
 
     print(
@@ -602,7 +761,7 @@ def main() -> None:
     )
 
     # --------------------------------------------------------
-    # Final analysis result
+    # FINAL RESULT
     # --------------------------------------------------------
 
     result = {
@@ -662,16 +821,16 @@ def main() -> None:
     }
 
     # --------------------------------------------------------
-    # Upload result
+    # UPLOAD ANALYSIS RESULT
     # --------------------------------------------------------
-
-    result_path = (
-        f"jobs/{JOB_ID}/analysis.json"
-    )
 
     update_job(
         stage="uploading_result",
         progress=94,
+    )
+
+    result_path = (
+        f"jobs/{JOB_ID}/analysis.json"
     )
 
     print(
@@ -684,46 +843,27 @@ def main() -> None:
     )
 
     # --------------------------------------------------------
-    # Cleanup source
+    # SOURCE CLEANUP
     # --------------------------------------------------------
 
-    try:
-        (
-            supabase
-            .storage
-            .from_(BUCKET)
-            .remove(
-                [
-                    document_path
-                ]
-            )
-        )
+    delete_storage_object(
+        document_path
+    )
 
+    cleanup_runtime_files()
+
+    try:
+        source.unlink(
+            missing_ok=True
+        )
     except Exception as exc:
         print(
-            "Source cleanup warning:",
+            "Source file cleanup warning:",
             exc,
         )
 
     # --------------------------------------------------------
-    # Cleanup parser-generated uploads
-    # --------------------------------------------------------
-
-    try:
-        for path in UPLOADS_DIR.glob("*"):
-            if path.is_file():
-                path.unlink(
-                    missing_ok=True
-                )
-
-    except Exception as exc:
-        print(
-            "Uploads cleanup warning:",
-            exc,
-        )
-
-    # --------------------------------------------------------
-    # Final state
+    # FINAL STATUS
     # --------------------------------------------------------
 
     final_stage = (
@@ -745,16 +885,53 @@ def main() -> None:
     print(
         "========================================"
     )
+
     print(
         "      JUPITER ANALYSIS = SUCCESS"
     )
+
     print(
         "========================================"
     )
+
     print(
         f"RESULT = {result_path}"
     )
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+
+    except Exception as exc:
+
+        print(
+            "========================================"
+        )
+
+        print(
+            "      JUPITER ANALYSIS = FAILED"
+        )
+
+        print(
+            "========================================"
+        )
+
+        print(
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        try:
+            update_job(
+                status="failed",
+                stage="analysis_failed",
+                progress=100,
+                error=str(exc),
+            )
+        except Exception as db_exc:
+            print(
+                "Could not update failed job:",
+                db_exc,
+            )
+
+        raise
