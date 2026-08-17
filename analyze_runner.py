@@ -131,6 +131,14 @@ from app.intelligence.estimator import (
     estimate_credits,
 )
 
+from app.intelligence.llm_gateway import (
+    gateway,
+)
+
+from app.intelligence.pricing import (
+    calculate_production_price,
+)
+
 from app.intelligence.teacher import (
     create_teaching_plan,
 )
@@ -589,6 +597,16 @@ def main() -> None:
     )
 
     # --------------------------------------------------------
+    # RESET LLM USAGE ACCOUNTING
+    # --------------------------------------------------------
+    # Accounting only.
+    # This does NOT alter token budgets, model selection,
+    # retries, prompts, or worker contracts.
+    # --------------------------------------------------------
+
+    gateway.reset_usage_ledger()
+
+    # --------------------------------------------------------
     # ARTIFACT 1
     # --------------------------------------------------------
 
@@ -761,6 +779,44 @@ def main() -> None:
     )
 
     # --------------------------------------------------------
+    # FINAL PRODUCTION PRICE
+    # --------------------------------------------------------
+    # Pricing happens only after the complete analysis/
+    # lesson blueprint exists.
+    #
+    # The pricing engine:
+    #   - records actual LLM usage for accounting when available
+    #   - estimates TTS cost
+    #   - estimates render complexity
+    #   - accounts for storage/delivery/operations
+    #   - applies contingency
+    #   - applies the configured gross-margin model
+    #
+    # It does NOT control any LLM token budget.
+    # --------------------------------------------------------
+
+    pricing = (
+        calculate_production_price(
+            artifact=classification,
+            teacher_plan=teacher_plan,
+            visual_design=visual_design,
+            fact_ledger=fact_ledger,
+            blueprint=blueprint,
+            target_minutes=TARGET_MINUTES,
+            quality=db_quality,
+            llm_usage_records=(
+                gateway.get_usage_ledger()
+            ),
+        )
+    )
+
+    print(
+        "Final customer price = "
+        f"{pricing.get('currency', 'INR')} "
+        f"{pricing.get('final_price')}"
+    )
+
+    # --------------------------------------------------------
     # FINAL RESULT
     # --------------------------------------------------------
 
@@ -784,6 +840,8 @@ def main() -> None:
         "visual_review": visual_review,
 
         "blueprint": blueprint,
+
+        "pricing": pricing,
 
         "source_metadata": {
             "page_count": page_count,
@@ -810,6 +868,18 @@ def main() -> None:
         "target_minutes": TARGET_MINUTES,
 
         "quality": db_quality,
+
+        "pricing_status": pricing.get(
+            "status"
+        ),
+
+        "pricing_version": pricing.get(
+            "pricing_version"
+        ),
+
+        "final_price": pricing.get(
+            "final_price"
+        ),
 
         "status": (
             "ready_for_generation"
