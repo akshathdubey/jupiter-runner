@@ -260,17 +260,30 @@ jobs:
               print("SUPABASE UPDATE STATUS:", response.status)
           PY
 
+      - name: Prepare Jupiter runtime directories
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p uploads
+          mkdir -p jobs
+
+          echo "Runner workspace:"
+          pwd
+
+          echo "Uploads directory:"
+          ls -ld uploads
+
+          echo "Jobs directory:"
+          ls -ld jobs
+
       - name: Run Jupiter analysis
         env:
           JOB_ID: ${{ inputs.job_id }}
           TARGET_MINUTES: ${{ inputs.target_minutes }}
           QUALITY: ${{ inputs.quality }}
-
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-
           AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
-          AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
-          AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
-
-        run: python analyze_runner.py
+        run: |
+          python analyze_runner.py
