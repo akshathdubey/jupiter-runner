@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
 
 from supabase import create_client
 
@@ -39,14 +37,15 @@ SUPABASE_KEY = os.environ[
 
 BUCKET = "jupiter-temp"
 
+
 supabase = create_client(
     SUPABASE_URL,
     SUPABASE_KEY,
 )
 
 
-def update_job(**values: Any) -> None:
-    result = (
+def update_job(**values) -> None:
+    (
         supabase
         .table("jobs")
         .update(values)
@@ -54,19 +53,8 @@ def update_job(**values: Any) -> None:
         .execute()
     )
 
-    error = getattr(
-        result,
-        "error",
-        None,
-    )
 
-    if error:
-        raise RuntimeError(
-            f"Supabase job update failed: {error}"
-        )
-
-
-def get_job() -> dict[str, Any]:
+def get_job() -> dict:
     result = (
         supabase
         .table("jobs")
@@ -76,23 +64,12 @@ def get_job() -> dict[str, Any]:
         .execute()
     )
 
-    error = getattr(
-        result,
-        "error",
-        None,
-    )
-
-    if error:
-        raise RuntimeError(
-            f"Could not read analysis job: {error}"
-        )
-
     if not result.data:
         raise RuntimeError(
             f"Analysis job {JOB_ID} not found."
         )
 
-    return dict(result.data)
+    return result.data
 
 
 def download_object(
@@ -106,26 +83,11 @@ def download_object(
         .download(remote_path)
     )
 
-    if not isinstance(
-        data,
-        bytes,
-    ):
-        raise RuntimeError(
-            "Supabase storage returned invalid data."
-        )
-
-    local_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    local_path.write_bytes(
-        data,
-    )
+    local_path.write_bytes(data)
 
 
 def upload_json(
-    value: dict[str, Any],
+    value: dict,
     remote_path: str,
 ) -> None:
     payload = json.dumps(
@@ -143,162 +105,98 @@ def upload_json(
             remote_path,
             payload,
             {
-                "content-type":
-                    "application/json",
-                "cache-control":
-                    "no-store",
-                "upsert":
-                    "true",
+                "content-type": "application/json",
+                "cache-control": "no-store",
+                "upsert": "true",
             },
         )
     )
 
-    error = getattr(
+    if getattr(
         result,
         "error",
         None,
-    )
-
-    if error:
+    ):
         raise RuntimeError(
-            f"Result upload failed: {error}"
+            f"Result upload failed: {result.error}"
         )
 
 
-def delete_source(
-    remote_path: str,
-) -> None:
-    try:
-        result = (
-            supabase
-            .storage
-            .from_(BUCKET)
-            .remove(
-                [remote_path]
-            )
-        )
-
-        error = getattr(
-            result,
-            "error",
-            None,
-        )
-
-        if error:
-            print(
-                "Source cleanup warning:",
-                error,
-            )
-
-    except Exception as exc:
-        print(
-            "Source cleanup warning:",
-            exc,
-        )
-
-
-def import_private_core() -> None:
-    core_path = (
-        Path(__file__).resolve().parent
-        / "jupiter-core"
-    )
-
-    if not core_path.exists():
-        raise RuntimeError(
-            "Private jupiter-core was not checked out."
-        )
-
-    app_path = (
-        core_path /
-        "app"
-    )
-
-    if not app_path.exists():
-        raise RuntimeError(
-            "Private jupiter-core/app directory is missing."
-        )
-
-    core_string = str(core_path)
-
-    if core_string not in sys.path:
-        sys.path.insert(
-            0,
-            core_string,
-        )
-
-
-def cleanup_workdir(
-    path: Path,
-) -> None:
+def _extract_page_count(
+    artifact: dict,
+) -> int:
     """
-    Best-effort cleanup.
+    Get page count from the parser when available.
 
-    On Windows, PyMuPDF may still hold an open PDF handle
-    after parsing. The analysis result is already persisted,
-    so cleanup must never turn a successful job into a failed job.
+    Falls back to the highest page number found in
+    extracted source objects.
     """
-    try:
-        shutil.rmtree(
-            path,
-            ignore_errors=True,
-        )
-    except Exception as exc:
-        print(
-            "Temporary cleanup warning:",
-            exc,
-        )
+
+    document = artifact.get(
+        "document",
+        {},
+    )
+
+    page_count = document.get(
+        "page_count"
+    )
+
+    if isinstance(
+        page_count,
+        int,
+    ) and page_count > 0:
+        return page_count
+
+    pages: set[int] = set()
+
+    for collection_name in (
+        "content_blocks",
+        "images",
+        "tables",
+        "equations",
+    ):
+        for item in artifact.get(
+            collection_name,
+            [],
+        ):
+            page = item.get("page")
+
+            if isinstance(
+                page,
+                int,
+            ):
+                pages.add(page)
+
+    return max(
+        pages,
+        default=0,
+    )
 
 
 def main() -> None:
     print(
         "========================================"
     )
-
     print(
         "       JUPITER CLOUD ANALYSIS"
     )
-
     print(
         "========================================"
     )
-
     print(
         f"JOB_ID         = {JOB_ID}"
     )
-
     print(
         f"TARGET_MINUTES = {TARGET_MINUTES}"
     )
-
     print(
         f"QUALITY        = {QUALITY}"
     )
 
-    if QUALITY not in {
-        "normal",
-        "elite",
-    }:
-        raise RuntimeError(
-            f"Invalid quality: {QUALITY}"
-        )
-
-    if TARGET_MINUTES not in {
-        1,
-        3,
-        5,
-        10,
-        15,
-        30,
-        60,
-    }:
-        raise RuntimeError(
-            f"Invalid target duration: {TARGET_MINUTES}"
-        )
-
     job = get_job()
 
     document_path = job.get(
-        "document_path",
+        "document_path"
     )
 
     if not document_path:
@@ -306,50 +204,59 @@ def main() -> None:
             "Analysis job has no document_path."
         )
 
-    database_minutes = job.get(
-        "target_minutes",
+    db_target_minutes = job.get(
+        "target_minutes"
     )
 
     if (
-        database_minutes is not None
-        and int(database_minutes)
+        db_target_minutes is not None
+        and int(db_target_minutes)
         != TARGET_MINUTES
     ):
         raise RuntimeError(
             "Duration mismatch: "
-            f"database={database_minutes}, "
+            f"database={db_target_minutes}, "
             f"workflow={TARGET_MINUTES}"
         )
 
-    database_quality = (
+    db_quality = (
         job.get("quality")
         or QUALITY
     )
 
-    if database_quality not in {
+    if db_quality not in {
         "normal",
         "elite",
+        "premium",
     }:
         raise RuntimeError(
-            f"Invalid database quality: "
-            f"{database_quality}"
+            f"Invalid quality: {db_quality}"
         )
 
-    if (
-        database_quality
-        != QUALITY
-    ):
-        raise RuntimeError(
-            "Quality mismatch: "
-            f"database={database_quality}, "
-            f"workflow={QUALITY}"
-        )
+    # ------------------------------------------------------------
+    # Private jupiter-core
+    # ------------------------------------------------------------
 
-    import_private_core()
-
-    from app.parsers.pdf import (
-        parse_pdf,
+    core = (
+        Path(__file__).resolve().parent
+        / "jupiter-core"
     )
+
+    if not core.exists():
+        raise RuntimeError(
+            "Private jupiter-core was not checked out."
+        )
+
+    sys.path.insert(
+        0,
+        str(core),
+    )
+
+    # ------------------------------------------------------------
+    # Existing private-core pipeline
+    # ------------------------------------------------------------
+
+    from app.parsers.pdf import parse_pdf
 
     from app.intelligence.classifier import (
         classify_artifact1,
@@ -383,44 +290,39 @@ def main() -> None:
         validate_visual_design,
     )
 
-    work_dir: Path | None = None
-    analysis_succeeded = False
+    # ------------------------------------------------------------
+    # NEW: user-facing lesson blueprint
+    # ------------------------------------------------------------
 
-    original_cwd = Path.cwd()
+    from app.api.blueprint import (
+        build_lesson_blueprint,
+    )
 
-    try:
-        work_dir = Path(
-            tempfile.mkdtemp(
-                prefix=(
-                    f"jupiter-analysis-{JOB_ID}-"
-                ),
-            )
+    # ------------------------------------------------------------
+    # Temporary working directory
+    # ------------------------------------------------------------
+
+    with tempfile.TemporaryDirectory(
+        prefix=(
+            f"jupiter-analysis-{JOB_ID}-"
+        ),
+    ) as temp_dir:
+
+        work = Path(temp_dir)
+
+        source = (
+            work
+            / Path(document_path).name
         )
 
-        uploads_dir = (
-            work_dir /
-            "uploads"
-        )
-
-        uploads_dir.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        os.chdir(
-            work_dir,
-        )
-
-        source_path = (
-            work_dir /
-            Path(document_path).name
-        )
+        # --------------------------------------------------------
+        # Download source
+        # --------------------------------------------------------
 
         update_job(
             status="running",
             stage="downloading_source",
             progress=5,
-            error=None,
         )
 
         print(
@@ -429,65 +331,53 @@ def main() -> None:
 
         download_object(
             document_path,
-            source_path,
+            source,
         )
 
         print(
-            f"Source file: {source_path.name}"
+            f"Source file: {source.name}"
         )
 
-        suffix = (
-            source_path.suffix
-            .lower()
-        )
-
-        # -------------------------------------------------
-        # SOURCE PARSING
-        # -------------------------------------------------
+        # --------------------------------------------------------
+        # Parse source
+        # --------------------------------------------------------
 
         update_job(
             stage="source_parsing",
             progress=10,
         )
 
+        suffix = source.suffix.lower()
+
         if suffix == ".pdf":
+
             artifact = parse_pdf(
-                source_path
+                source
             )
 
         elif suffix == ".txt":
-            text = (
-                source_path.read_text(
-                    encoding="utf-8",
-                    errors="replace",
-                )
+
+            text = source.read_text(
+                encoding="utf-8",
+                errors="replace",
             )
 
             artifact = {
                 "document": {
-                    "type":
-                        "txt",
-                    "title":
-                        source_path.stem,
-                    "language":
-                        "unknown",
+                    "type": "txt",
+                    "title": source.stem,
+                    "language": "unknown",
+                    "page_count": 1,
                 },
-
                 "content_blocks": [
                     {
-                        "id":
-                            "text_1",
-                        "page":
-                            None,
-                        "type":
-                            "text",
-                        "text":
-                            text,
-                        "importance":
-                            "unclassified",
+                        "id": "text_1",
+                        "page": None,
+                        "type": "text",
+                        "text": text,
+                        "importance": "unclassified",
                     }
                 ],
-
                 "images": [],
                 "tables": [],
                 "equations": [],
@@ -496,17 +386,24 @@ def main() -> None:
 
         else:
             raise RuntimeError(
-                "Unsupported source type. "
-                "Only PDF and TXT are supported."
+                "MVP currently accepts PDF and TXT."
             )
 
-        # -------------------------------------------------
-        # ARTIFACT 1
-        # -------------------------------------------------
+        page_count = _extract_page_count(
+            artifact
+        )
+
+        print(
+            f"Source pages = {page_count}"
+        )
+
+        # --------------------------------------------------------
+        # Artifact 1
+        # --------------------------------------------------------
 
         update_job(
             stage="source_analysis",
-            progress=20,
+            progress=15,
         )
 
         print(
@@ -516,7 +413,7 @@ def main() -> None:
         classification = (
             classify_artifact1(
                 artifact,
-                database_quality,
+                db_quality,
             )
         )
 
@@ -528,7 +425,7 @@ def main() -> None:
             estimate_credits(
                 classification,
                 TARGET_MINUTES,
-                database_quality,
+                db_quality,
             )
         )
 
@@ -542,9 +439,9 @@ def main() -> None:
             )
         )
 
-        # -------------------------------------------------
-        # ARTIFACT 2
-        # -------------------------------------------------
+        # --------------------------------------------------------
+        # Artifact 2
+        # --------------------------------------------------------
 
         update_job(
             stage="teacher_plan",
@@ -559,7 +456,7 @@ def main() -> None:
             create_teaching_plan(
                 classification,
                 TARGET_MINUTES,
-                database_quality,
+                db_quality,
             )
         )
 
@@ -571,17 +468,17 @@ def main() -> None:
             review_teaching_plan(
                 classification,
                 teacher_plan,
-                database_quality,
+                db_quality,
             )
         )
 
-        # -------------------------------------------------
-        # ARTIFACT 3
-        # -------------------------------------------------
+        # --------------------------------------------------------
+        # Artifact 3
+        # --------------------------------------------------------
 
         update_job(
             stage="visual_design",
-            progress=55,
+            progress=50,
         )
 
         print(
@@ -592,18 +489,18 @@ def main() -> None:
             create_visual_design(
                 teacher_plan,
                 TARGET_MINUTES,
-                database_quality,
+                db_quality,
                 fact_ledger=fact_ledger,
             )
         )
 
-        # -------------------------------------------------
-        # VISUAL VALIDATION
-        # -------------------------------------------------
+        # --------------------------------------------------------
+        # Visual validation
+        # --------------------------------------------------------
 
         update_job(
             stage="visual_validation",
-            progress=70,
+            progress=65,
         )
 
         print(
@@ -618,89 +515,130 @@ def main() -> None:
             )
         )
 
-        # -------------------------------------------------
-        # VISUAL REVIEW
-        # -------------------------------------------------
+        # --------------------------------------------------------
+        # Visual review
+        # --------------------------------------------------------
 
         visual_review = None
 
         if visual_validation.get(
-            "passed",
+            "passed"
         ):
+
             update_job(
                 stage="visual_review",
-                progress=80,
+                progress=75,
             )
 
             print(
-                "Running visual review..."
+                "Reviewing visual design..."
             )
 
             visual_review = (
                 review_visual_design(
                     teacher_plan,
                     visual_design,
-                    database_quality,
+                    db_quality,
                 )
             )
 
-        else:
-            print(
-                "Visual validation failed; "
-                "skipping visual review."
-            )
+        # --------------------------------------------------------
+        # NEW: build user-facing blueprint
+        #
+        # IMPORTANT:
+        # This does NOT call an LLM.
+        # It only transforms already-generated artifacts.
+        # Therefore it does not consume additional AI credits.
+        # --------------------------------------------------------
 
-        # -------------------------------------------------
-        # FINAL RESULT
-        # -------------------------------------------------
+        update_job(
+            stage="building_blueprint",
+            progress=82,
+        )
 
-        ready_for_generation = bool(
-            visual_validation.get(
-                "passed",
+        print(
+            "Building lesson blueprint..."
+        )
+
+        blueprint = (
+            build_lesson_blueprint(
+                artifact=classification,
+                teaching_plan=teacher_plan,
+                visual_design=visual_design,
+                target_minutes=TARGET_MINUTES,
+                quality=db_quality,
+                narrator=job.get(
+                    "tts_voice"
+                ),
+                generation_price=None,
             )
         )
 
+        # --------------------------------------------------------
+        # Freeze exact result
+        # --------------------------------------------------------
+
         result = {
-            "project_id":
-                JOB_ID,
+            "project_id": JOB_ID,
 
-            "artifact":
-                classification,
+            "artifact": classification,
 
-            "estimate":
-                estimate,
+            "estimate": estimate,
 
-            "teacher":
-                teacher_plan,
+            "teacher": teacher_plan,
 
-            "teacher_review":
-                teacher_review,
+            "teacher_review": teacher_review,
 
-            "fact_ledger":
-                fact_ledger,
+            "fact_ledger": fact_ledger,
 
-            "visual_design":
-                visual_design,
+            "visual_design": visual_design,
 
-            "visual_validation":
-                visual_validation,
+            "visual_validation": visual_validation,
 
-            "visual_review":
-                visual_review,
+            "visual_review": visual_review,
 
-            "status":
-                (
-                    "ready_for_generation"
-                    if ready_for_generation
-                    else "visual_design_rejected"
+            "blueprint": blueprint,
+
+            "source_metadata": {
+                "page_count": page_count,
+                "tables": len(
+                    classification.get(
+                        "tables",
+                        [],
+                    )
                 ),
+                "images": len(
+                    classification.get(
+                        "images",
+                        [],
+                    )
+                ),
+                "equations": len(
+                    classification.get(
+                        "equations",
+                        [],
+                    )
+                ),
+            },
 
-            "target_minutes":
-                TARGET_MINUTES,
+            "status": (
+                "ready_for_generation"
+                if visual_validation.get(
+                    "passed"
+                )
+                else "visual_design_rejected"
+            ),
 
-            "quality":
-                database_quality,
+            "target_minutes": (
+                TARGET_MINUTES
+            ),
+
+            "quality": db_quality,
         }
+
+        # --------------------------------------------------------
+        # Upload analysis result
+        # --------------------------------------------------------
 
         result_path = (
             f"jobs/{JOB_ID}/analysis.json"
@@ -708,7 +646,7 @@ def main() -> None:
 
         update_job(
             stage="uploading_result",
-            progress=90,
+            progress=92,
         )
 
         print(
@@ -720,35 +658,63 @@ def main() -> None:
             result_path,
         )
 
-        # Source document is no longer needed.
-        delete_source(
-            document_path,
-        )
+        # --------------------------------------------------------
+        # Delete original source
+        # --------------------------------------------------------
 
-        final_stage = (
-            "ready_for_generation"
-            if ready_for_generation
-            else "visual_design_rejected"
-        )
+        try:
+
+            (
+                supabase
+                .storage
+                .from_(BUCKET)
+                .remove(
+                    [
+                        document_path
+                    ]
+                )
+            )
+
+        except Exception as exc:
+
+            print(
+                "Source cleanup warning:",
+                exc,
+            )
+
+        # --------------------------------------------------------
+        # Final status
+        # --------------------------------------------------------
+
+        if visual_validation.get(
+            "passed"
+        ):
+
+            final_stage = (
+                "ready_for_generation"
+            )
+
+        else:
+
+            final_stage = (
+                "visual_design_rejected"
+            )
 
         update_job(
             status="completed",
             stage=final_stage,
             progress=100,
             result_path=result_path,
+            completed_at=None,
             error=None,
         )
-
-        analysis_succeeded = True
 
         print(
             "========================================"
         )
-
         print(
-            "     JUPITER ANALYSIS = SUCCESS"
+            "      JUPITER ANALYSIS = SUCCESS"
         )
-
         print(
             "========================================"
         )
@@ -756,56 +722,6 @@ def main() -> None:
         print(
             f"RESULT = {result_path}"
         )
-
-    except Exception as exc:
-        if not analysis_succeeded:
-            error_message = (
-                f"{type(exc).__name__}: {exc}"
-            )
-
-            print(
-                "========================================"
-            )
-
-            print(
-                "      JUPITER ANALYSIS = FAILED"
-            )
-
-            print(
-                "========================================"
-            )
-
-            print(
-                error_message
-            )
-
-            try:
-                update_job(
-                    status="failed",
-                    stage="analysis_failed",
-                    progress=100,
-                    error=error_message,
-                )
-            except Exception as update_error:
-                print(
-                    "Could not update failed job:",
-                    update_error,
-                )
-
-            raise
-
-    finally:
-        try:
-            os.chdir(
-                original_cwd,
-            )
-        except Exception:
-            pass
-
-        if work_dir is not None:
-            cleanup_workdir(
-                work_dir,
-            )
 
 
 if __name__ == "__main__":
