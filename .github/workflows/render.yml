@@ -1,58 +1,159 @@
-name: Render Video
+name: Jupiter Render
 
-# Trigger on pushes to main and manual runs
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
+    inputs:
+      job_id:
+        description: Jupiter generation job ID
+        required: true
+        type: string
+      target_minutes:
+        description: Lesson duration
+        required: true
+        type: string
+      quality:
+        description: Internal Jupiter quality
+        required: true
+        type: choice
+        options:
+          - normal
+          - elite
+      tts_voice:
+        description: Edge TTS voice
+        required: false
+        default: "en-US-AriaNeural"
+        type: string
+      tts_rate:
+        description: Edge TTS rate
+        required: false
+        default: "+0%"
+        type: string
+      tts_volume:
+        description: Edge TTS volume
+        required: false
+        default: "+0%"
+        type: string
 
-# Cancel any in-progress runs on the same ref when a new run starts
+permissions:
+  contents: read
+
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: jupiter-render-${{ inputs.job_id }}
+  cancel-in-progress: false
 
 jobs:
   build:
-    runs-on: ubuntu-24.04          # Use Ubuntu 24.04 LTS runner
-    timeout-minutes: 30           # Overall job timeout
+    name: Render video
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
 
     steps:
-      # Checkout the repository code
-      - name: Checkout repository
+      - name: Checkout public runner
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      # Verify system packages and only update if needed
+      - name: Generate private-core access token
+        id: core-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: akshathdubey
+          repositories: |
+            jupiter-core
+          permission-contents: read
+          permission-metadata: read
+
+      - name: Checkout private Jupiter core
+        uses: actions/checkout@v4
+        with:
+          repository: akshathdubey/jupiter-core
+          token: ${{ steps.core-token.outputs.token }}
+          path: jupiter-core
+          fetch-depth: 1
+          clean: true
+
+      - name: Verify repository layout
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f runner.py
+          test -f jupiter-core/app/__init__.py
+          test -f jupiter-core/app/intelligence/production_pipeline.py
+          test -f jupiter-core/app/intelligence/manim_generator.py
+          test -f jupiter-core/app/intelligence/manim_template.py
+
+          echo "RUNNER = OK"
+          echo "PRIVATE CORE = OK"
+
       - name: Verify system dependencies
         shell: bash
         run: |
           set -euo pipefail
+
           echo "Checking preinstalled render dependencies..."
-          MISSING=0
-          command -v ffmpeg >/dev/null 2>&1 || { echo "MISSING: ffmpeg"; MISSING=1; }
-          command -v pkg-config >/dev/null 2>&1 || { echo "MISSING: pkg-config"; MISSING=1; }
-          pkg-config --exists cairo 2>/dev/null || { echo "MISSING: cairo"; MISSING=1; }
-          pkg-config --exists pangocairo 2>/dev/null || { echo "MISSING: pangocairo"; MISSING=1; }
-          pkg-config --exists glib-2.0 2>/dev/null || { echo "MISSING: glib"; MISSING=1; }
-          if [ "$MISSING" -eq 0 ]; then
-            echo "========================================"
+
+          missing=0
+
+          command -v ffmpeg >/dev/null 2>&1 || {
+            echo "MISSING: ffmpeg"
+            missing=1
+          }
+
+          command -v pkg-config >/dev/null 2>&1 || {
+            echo "MISSING: pkg-config"
+            missing=1
+          }
+
+          pkg-config --exists cairo 2>/dev/null || {
+            echo "MISSING: cairo"
+            missing=1
+          }
+
+          pkg-config --exists pangocairo 2>/dev/null || {
+            echo "MISSING: pangocairo"
+            missing=1
+          }
+
+          pkg-config --exists glib-2.0 2>/dev/null || {
+            echo "MISSING: glib-2.0"
+            missing=1
+          }
+
+          if [ "$missing" -eq 0 ]; then
             echo "SYSTEM DEPENDENCIES = ALREADY AVAILABLE"
-            echo "========================================"
             ffmpeg -version | head -n 1
-            pkg-config --modversion cairo
-            pkg-config --modversion pangocairo
+            echo "cairo=$(pkg-config --modversion cairo)"
+            echo "pangocairo=$(pkg-config --modversion pangocairo)"
+            echo "glib=$(pkg-config --modversion glib-2.0)"
             exit 0
           fi
-          echo "Some render dependencies are missing; using official Ubuntu mirror..."
-          # Replace Azure mirror with archive.ubuntu.com if present
+
+          echo "Some system dependencies are missing."
+          echo "Repairing Ubuntu mirror configuration before apt access."
+
           if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
-            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+            sudo sed -i \
+              's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
+              /etc/apt/sources.list.d/ubuntu.sources
           fi
+
           if [ -f /etc/apt/sources.list ]; then
-            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list
+            sudo sed -i \
+              's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
+              /etc/apt/sources.list
           fi
+
           sudo apt-get clean
-          # Update with retries/timeouts to avoid long hangs on bad mirrors
-          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update
+
+          sudo apt-get \
+            -o Acquire::Retries=2 \
+            -o Acquire::http::Timeout=15 \
+            -o Acquire::https::Timeout=15 \
+            update
+
           sudo apt-get install -y --no-install-recommends \
             ffmpeg \
             pkg-config \
@@ -63,66 +164,103 @@ jobs:
             libpangocairo-1.0-0 \
             libglib2.0-0 \
             libglib2.0-dev
-          echo "========================================"
-          echo "SYSTEM DEPENDENCIES = INSTALLED"
-          echo "========================================"
+
           ffmpeg -version | head -n 1
-          pkg-config --modversion cairo
-          pkg-config --modversion pangocairo
+          echo "cairo=$(pkg-config --modversion cairo)"
+          echo "pangocairo=$(pkg-config --modversion pangocairo)"
+          echo "glib=$(pkg-config --modversion glib-2.0)"
 
-      # Set up Python 3.x environment
-      - name: Setup Python
-        uses: actions/setup-python@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.12'   # Use Python 3.12 (installed on runner)
-      - name: Check Python version
-        run: python --version
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            jupiter-core/requirements.txt
 
-      # Cache pip packages (based on requirements.txt)
-      - name: Cache pip packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      # Install Python dependencies: requirements, Manim, edge-tts
       - name: Install Python dependencies
+        shell: bash
         run: |
+          set -euo pipefail
+
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          # Pin Manim to v0.19.x, install edge-tts (Python TTS)
-          pip install "manim>=0.19,<0.20" edge-tts
-          echo "Installed Python packages:"
-          manim --version
-          python3 -c "import edge_tts; print('edge-tts version', edge_tts.__version__)"
-      
-      # (Here insert the commands to run the actual rendering, e.g. your render script)
-      - name: Run rendering
+
+          if [ -f requirements.txt ]; then
+            python -m pip install -r requirements.txt
+          fi
+
+          if [ -f jupiter-core/requirements.txt ]; then
+            python -m pip install -r jupiter-core/requirements.txt
+          fi
+
+          python -m pip install "manim>=0.19,<0.20" edge-tts
+          python -m pip install -e ./jupiter-core
+
+          echo "REQUESTS = OK"
+          python -c "import manim; print('MANIM =', manim.__version__)"
+          python -c "import edge_tts; print('EDGE TTS = OK')"
+          python -c "from app.intelligence.production_pipeline import generate_final_video; print('PRODUCTION PIPELINE = OK')"
+
+      - name: Prepare render runtime
+        shell: bash
         run: |
-          # Example: adjust to your actual render command
-          echo "Starting rendering..."
-          python3 render.py    # <-- replace with actual render command
-          echo "Rendering finished."
+          set -euo pipefail
 
-      # Upload the final rendered video on success
-      - name: Upload rendered video
+          mkdir -p uploads jobs .jupiter_debug
+
+          python -m py_compile runner.py
+
+          echo "RUNNER = COMPILED"
+
+      - name: Run Jupiter render
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          TARGET_MINUTES: ${{ inputs.target_minutes }}
+          QUALITY: ${{ inputs.quality }}
+          TTS_VOICE: ${{ inputs.tts_voice }}
+          TTS_RATE: ${{ inputs.tts_rate }}
+          TTS_VOLUME: ${{ inputs.tts_volume }}
+
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+          PYTHONUNBUFFERED: "1"
+          PYTHONPATH: ${{ github.workspace }}/jupiter-core
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "JUPITER PRODUCTION JOB"
+          echo "========================================"
+          echo "JOB_ID         = ${JOB_ID}"
+          echo "TARGET_MINUTES = ${TARGET_MINUTES}"
+          echo "QUALITY        = ${QUALITY}"
+          echo "========================================"
+
+          python -u runner.py
+
+      - name: Upload final rendered video
         if: success()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: rendered-video
+          name: jupiter-render-${{ inputs.job_id }}
           path: |
-            # adjust path as needed; this uploads any .mp4 in the workspace
+            .jupiter_debug/${{ inputs.job_id }}/final.mp4
             **/*.mp4
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0
 
-      # Always upload logs (or intermediate files) for diagnostics
-      - name: Upload logs (on success or failure)
+      - name: Upload render diagnostics
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: render-logs
+          name: jupiter-render-debug-${{ inputs.job_id }}
           path: |
-            # adjust path to where your workflow logs or output files are saved
-            logs/**/*
-            *.log
+            .jupiter_debug/${{ inputs.job_id }}/
+            .jupiter_jobs/${{ inputs.job_id }}/
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 6
