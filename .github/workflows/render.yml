@@ -4,34 +4,36 @@ on:
   workflow_dispatch:
     inputs:
       job_id:
-        description: Jupiter generation job ID
+        description: Jupiter production job ID
         required: true
         type: string
+
       target_minutes:
-        description: Lesson duration
+        description: Lesson duration in minutes
         required: true
         type: string
+
       quality:
-        description: Internal Jupiter quality
+        description: Jupiter production quality
         required: true
         type: choice
         options:
           - normal
           - elite
+
       tts_voice:
         description: Edge TTS voice
-        required: false
-        default: "en-US-AriaNeural"
+        required: true
         type: string
+
       tts_rate:
-        description: Edge TTS rate
-        required: false
-        default: "+0%"
+        description: TTS rate
+        required: true
         type: string
+
       tts_volume:
-        description: Edge TTS volume
-        required: false
-        default: "+0%"
+        description: TTS volume
+        required: true
         type: string
 
 permissions:
@@ -42,16 +44,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  render:
     name: Render video
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+
+    # A 60-minute lesson can legitimately take substantial time.
+    # Do not let the workflow itself kill a valid long render.
+    timeout-minutes: 180
 
     steps:
+
+      # ==========================================================
+      # CHECKOUT PUBLIC RUNNER
+      # ==========================================================
+
       - name: Checkout public runner
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          clean: true
+
+      # ==========================================================
+      # PRIVATE JUPITER CORE ACCESS
+      # ==========================================================
 
       - name: Generate private-core access token
         id: core-token
@@ -74,75 +89,129 @@ jobs:
           fetch-depth: 1
           clean: true
 
-      - name: Verify repository layout
+      # ==========================================================
+      # WORKSPACE / INPUT DIAGNOSTICS
+      # ==========================================================
+
+      - name: Verify Jupiter repository layout
         shell: bash
         run: |
           set -euo pipefail
 
-          test -f runner.py
-          test -f jupiter-core/app/__init__.py
-          test -f jupiter-core/app/intelligence/production_pipeline.py
-          test -f jupiter-core/app/intelligence/manim_generator.py
-          test -f jupiter-core/app/intelligence/manim_template.py
+          echo "========================================"
+          echo "JUPITER RENDER WORKSPACE"
+          echo "========================================"
 
-          echo "RUNNER = OK"
-          echo "PRIVATE CORE = OK"
+          echo "JOB_ID         = ${{ inputs.job_id }}"
+          echo "TARGET_MINUTES = ${{ inputs.target_minutes }}"
+          echo "QUALITY        = ${{ inputs.quality }}"
+          echo ""
+
+          test -f "./runner.py"
+          test -d "./jupiter-core"
+
+          test -f "./jupiter-core/app/__init__.py"
+          test -f "./jupiter-core/app/config.py"
+          test -f "./jupiter-core/app/intelligence/production_pipeline.py"
+          test -f "./jupiter-core/app/intelligence/llm_gateway.py"
+          test -f "./jupiter-core/app/intelligence/duration_controlled_narrator.py"
+
+          echo ""
+          echo "RUNNER ROOT:"
+          pwd
+
+          echo ""
+          echo "PYTHON:"
+          python --version || true
+
+          echo ""
+          echo "CORE ROOT:"
+          ls -la ./jupiter-core/app/intelligence | head -40
+
+      # ==========================================================
+      # SYSTEM DEPENDENCIES
+      #
+      # IMPORTANT:
+      # Do NOT run apt-get update on every render.
+      #
+      # GitHub-hosted Ubuntu images already contain most of the
+      # required rendering stack. Only install packages when
+      # something is actually missing.
+      # ==========================================================
 
       - name: Verify system dependencies
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Checking preinstalled render dependencies..."
+          echo "========================================"
+          echo "CHECKING SYSTEM DEPENDENCIES"
+          echo "========================================"
 
-          missing=0
+          MISSING=0
 
-          command -v ffmpeg >/dev/null 2>&1 || {
+          if ! command -v ffmpeg >/dev/null 2>&1; then
             echo "MISSING: ffmpeg"
-            missing=1
-          }
+            MISSING=1
+          fi
 
-          command -v pkg-config >/dev/null 2>&1 || {
+          if ! command -v pkg-config >/dev/null 2>&1; then
             echo "MISSING: pkg-config"
-            missing=1
-          }
+            MISSING=1
+          fi
 
-          pkg-config --exists cairo 2>/dev/null || {
+          if ! pkg-config --exists cairo 2>/dev/null; then
             echo "MISSING: cairo"
-            missing=1
-          }
+            MISSING=1
+          fi
 
-          pkg-config --exists pangocairo 2>/dev/null || {
+          if ! pkg-config --exists pangocairo 2>/dev/null; then
             echo "MISSING: pangocairo"
-            missing=1
-          }
+            MISSING=1
+          fi
 
-          pkg-config --exists glib-2.0 2>/dev/null || {
+          if ! pkg-config --exists glib-2.0 2>/dev/null; then
             echo "MISSING: glib-2.0"
-            missing=1
-          }
+            MISSING=1
+          fi
 
-          if [ "$missing" -eq 0 ]; then
-            echo "SYSTEM DEPENDENCIES = ALREADY AVAILABLE"
+          if [ "$MISSING" -eq 0 ]; then
+            echo ""
+            echo "========================================"
+            echo "SYSTEM DEPENDENCIES = READY"
+            echo "========================================"
+
             ffmpeg -version | head -n 1
-            echo "cairo=$(pkg-config --modversion cairo)"
-            echo "pangocairo=$(pkg-config --modversion pangocairo)"
-            echo "glib=$(pkg-config --modversion glib-2.0)"
+            echo "cairo       = $(pkg-config --modversion cairo)"
+            echo "pangocairo  = $(pkg-config --modversion pangocairo)"
+            echo "glib        = $(pkg-config --modversion glib-2.0)"
+
             exit 0
           fi
 
+          echo ""
           echo "Some system dependencies are missing."
-          echo "Repairing Ubuntu mirror configuration before apt access."
+          echo "Preparing Ubuntu package installation..."
 
+          # GitHub-hosted runners can occasionally expose an unhealthy
+          # Azure Ubuntu mirror. Replace it with the public Ubuntu mirror.
           if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
             sudo sed -i \
               's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
+              /etc/apt/sources.list.d/ubuntu.sources
+
+            sudo sed -i \
+              's|https://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
               /etc/apt/sources.list.d/ubuntu.sources
           fi
 
           if [ -f /etc/apt/sources.list ]; then
             sudo sed -i \
               's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
+              /etc/apt/sources.list
+
+            sudo sed -i \
+              's|https://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
               /etc/apt/sources.list
           fi
 
@@ -165,12 +234,26 @@ jobs:
             libglib2.0-0 \
             libglib2.0-dev
 
-          ffmpeg -version | head -n 1
-          echo "cairo=$(pkg-config --modversion cairo)"
-          echo "pangocairo=$(pkg-config --modversion pangocairo)"
-          echo "glib=$(pkg-config --modversion glib-2.0)"
+          echo ""
+          echo "========================================"
+          echo "SYSTEM DEPENDENCIES = INSTALLED"
+          echo "========================================"
 
-      - name: Set up Python
+          ffmpeg -version | head -n 1
+          echo "cairo       = $(pkg-config --modversion cairo)"
+          echo "pangocairo  = $(pkg-config --modversion pangocairo)"
+          echo "glib        = $(pkg-config --modversion glib-2.0)"
+
+      # ==========================================================
+      # PYTHON
+      #
+      # Keep production on Python 3.11.
+      # This matches the known working Jupiter environment and
+      # avoids silently changing the runtime underneath Pydantic,
+      # Manim, Supabase and the private core.
+      # ==========================================================
+
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -178,6 +261,18 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             jupiter-core/requirements.txt
+
+      - name: Verify Python
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python --version
+          python -c "import sys; print(sys.executable)"
+
+      # ==========================================================
+      # PYTHON DEPENDENCIES
+      # ==========================================================
 
       - name: Install Python dependencies
         shell: bash
@@ -194,30 +289,113 @@ jobs:
             python -m pip install -r jupiter-core/requirements.txt
           fi
 
-          python -m pip install "manim>=0.19,<0.20" edge-tts
-          python -m pip install -e ./jupiter-core
+          python -m pip install \
+            "manim>=0.19,<0.20" \
+            edge-tts
 
-          echo "REQUESTS = OK"
-          python -c "import manim; print('MANIM =', manim.__version__)"
-          python -c "import edge_tts; print('EDGE TTS = OK')"
-          python -c "from app.intelligence.production_pipeline import generate_final_video; print('PRODUCTION PIPELINE = OK')"
+          echo ""
+          echo "========================================"
+          echo "PRODUCTION DEPENDENCIES"
+          echo "========================================"
 
-      - name: Prepare render runtime
+          python -m manim --version
+
+          python - <<'PY'
+          import edge_tts
+          print("EDGE TTS = OK")
+          PY
+
+          python - <<'PY'
+          import requests
+          print("REQUESTS = OK")
+          PY
+
+      # ==========================================================
+      # ENVIRONMENT DIAGNOSTICS
+      #
+      # DO NOT PRINT SECRET VALUES.
+      # Only verify their presence.
+      # ==========================================================
+
+      - name: Verify production environment
         shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
         run: |
           set -euo pipefail
 
-          mkdir -p uploads jobs .jupiter_debug
+          echo "========================================"
+          echo "VERIFYING PRODUCTION ENVIRONMENT"
+          echo "========================================"
 
-          python -m py_compile runner.py
+          test -n "${SUPABASE_URL:-}" || {
+            echo "ERROR: SUPABASE_URL is not configured."
+            exit 1
+          }
 
-          echo "RUNNER = COMPILED"
+          test -n "${SUPABASE_SERVICE_ROLE_KEY:-}" || {
+            echo "ERROR: SUPABASE_SERVICE_ROLE_KEY is not configured."
+            exit 1
+          }
+
+          test -n "${AICREDITS_API_KEY:-}" || {
+            echo "ERROR: AICREDITS_API_KEY is not configured."
+            echo "Add the AICREDITS_API_KEY repository secret."
+            exit 1
+          }
+
+          echo "SUPABASE_URL              = OK"
+          echo "SUPABASE_SERVICE_ROLE_KEY = OK"
+          echo "AICREDITS_API_KEY         = OK"
+
+      # ==========================================================
+      # RUNTIME IMPORT CHECK
+      #
+      # This catches configuration/import problems BEFORE a real
+      # render starts.
+      # ==========================================================
+
+      - name: Verify Jupiter production imports
+        shell: bash
+        env:
+          AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
+          AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
+          AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
+
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+        run: |
+          set -euo pipefail
+
+          export PYTHONPATH="${GITHUB_WORKSPACE}/jupiter-core"
+
+          python - <<'PY'
+          import app
+          from app.config import settings
+          from app.intelligence.production_pipeline import generate_final_video
+
+          assert settings.aicredits_api_key
+          print("JUPITER CORE = OK")
+          print("PRODUCTION PIPELINE = OK")
+          PY
+
+      # ==========================================================
+      # RENDER
+      #
+      # The application runner is the production entry point.
+      # Do NOT call render.py.
+      # ==========================================================
 
       - name: Run Jupiter render
+        shell: bash
         env:
           JOB_ID: ${{ inputs.job_id }}
           TARGET_MINUTES: ${{ inputs.target_minutes }}
           QUALITY: ${{ inputs.quality }}
+
           TTS_VOICE: ${{ inputs.tts_voice }}
           TTS_RATE: ${{ inputs.tts_rate }}
           TTS_VOLUME: ${{ inputs.tts_volume }}
@@ -225,42 +403,95 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
+          AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
+          AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
+          AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
+
           PYTHONUNBUFFERED: "1"
           PYTHONPATH: ${{ github.workspace }}/jupiter-core
-        shell: bash
+
         run: |
           set -euo pipefail
 
           echo "========================================"
-          echo "JUPITER PRODUCTION JOB"
+          echo "       JUPITER PRODUCTION JOB"
           echo "========================================"
+
           echo "JOB_ID         = ${JOB_ID}"
           echo "TARGET_MINUTES = ${TARGET_MINUTES}"
           echo "QUALITY        = ${QUALITY}"
-          echo "========================================"
+          echo ""
 
           python -u runner.py
 
-      - name: Upload final rendered video
+      # ==========================================================
+      # ALWAYS COLLECT JUPITER DEBUG STATE
+      #
+      # runner.py preserves diagnostics under .jupiter_debug.
+      # Do not fail the workflow merely because no debug directory
+      # was produced.
+      # ==========================================================
+
+      - name: Upload Jupiter debug artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jupiter-debug-${{ inputs.job_id }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            .jupiter_debug/${{ inputs.job_id }}/**
+            .jupiter_jobs/${{ inputs.job_id }}/**
+
+      # ==========================================================
+      # UPLOAD FINAL VIDEO AS CI ARTIFACT
+      #
+      # This is only a diagnostic/backup artifact.
+      # The canonical user download remains Supabase.
+      # ==========================================================
+
+      - name: Upload rendered video artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: jupiter-render-${{ inputs.job_id }}
-          path: |
-            .jupiter_debug/${{ inputs.job_id }}/final.mp4
-            **/*.mp4
           if-no-files-found: warn
           retention-days: 7
-          compression-level: 0
+          path: |
+            .jupiter_debug/${{ inputs.job_id }}/**/*.mp4
+            .jupiter_jobs/${{ inputs.job_id }}/**/*.mp4
 
-      - name: Upload render diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: jupiter-render-debug-${{ inputs.job_id }}
-          path: |
-            .jupiter_debug/${{ inputs.job_id }}/
-            .jupiter_jobs/${{ inputs.job_id }}/
-          if-no-files-found: warn
-          retention-days: 7
-          compression-level: 6
+      # ==========================================================
+      # FINAL FAILURE SUMMARY
+      # ==========================================================
+
+      - name: Render failure summary
+        if: failure()
+        shell: bash
+        run: |
+          echo "========================================"
+          echo "       JUPITER RENDER FAILED"
+          echo "========================================"
+
+          echo "JOB_ID         = ${{ inputs.job_id }}"
+          echo "TARGET_MINUTES = ${{ inputs.target_minutes }}"
+          echo "QUALITY        = ${{ inputs.quality }}"
+
+          echo ""
+          echo "Workspace:"
+          pwd
+
+          echo ""
+          echo "Debug directories:"
+          find . \
+            -maxdepth 4 \
+            -type d \
+            \( -name ".jupiter_debug" -o -name ".jupiter_jobs" \) \
+            -print 2>/dev/null || true
+
+          echo ""
+          echo "MP4 files:"
+          find . \
+            -type f \
+            -name "*.mp4" \
+            -print 2>/dev/null || true
