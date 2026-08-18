@@ -268,7 +268,37 @@ def main() -> None:
             work,
         )
 
-        update_job(stage="production_pipeline", progress=5)
+        def production_progress(
+            stage: str,
+            progress: int,
+            details: dict | None = None,
+        ) -> None:
+            values = {
+                "status": "running",
+                "stage": stage,
+                "progress": int(progress),
+                "error": None,
+            }
+
+            if details:
+                if details.get("audio_duration_seconds") is not None:
+                    values["audio_duration_seconds"] = details[
+                        "audio_duration_seconds"
+                    ]
+
+                if details.get("visual_duration_seconds") is not None:
+                    values["render_duration_seconds"] = details[
+                        "visual_duration_seconds"
+                    ]
+
+            update_job(**values)
+
+        update_job(
+            stage="production_started",
+            progress=5,
+            render_attempt=int(job.get("render_attempt") or 0) + 1,
+            error=None,
+        )
 
         result = generate_final_video(
             teacher,
@@ -280,6 +310,7 @@ def main() -> None:
             tts_volume=TTS_VOLUME,
             max_repair_cycles=2,
             render_timeout_seconds=1200,
+            progress_callback=production_progress,
         )
 
         if not result.get("passed"):
@@ -298,7 +329,23 @@ def main() -> None:
                 "Production reported success but final.mp4 is missing."
             )
 
-        update_job(stage="uploading", progress=97)
+        final_duration = result.get(
+            "final_duration_seconds"
+        )
+        audio_duration = result.get(
+            "audio_duration_seconds"
+        )
+        render_duration = result.get(
+            "retimed_visual_seconds"
+        )
+
+        update_job(
+            stage="uploading",
+            progress=97,
+            render_duration_seconds=render_duration,
+            audio_duration_seconds=audio_duration,
+            final_video_duration_seconds=final_duration,
+        )
 
         remote_output = f"jobs/{JOB_ID}/final.mp4"
         upload_video(output_file, remote_output)
@@ -308,6 +355,9 @@ def main() -> None:
             stage="completed",
             progress=100,
             output_path=remote_output,
+            render_duration_seconds=render_duration,
+            audio_duration_seconds=audio_duration,
+            final_video_duration_seconds=final_duration,
             error=None,
         )
 

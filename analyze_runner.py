@@ -163,11 +163,6 @@ from app.intelligence.visual_validator import (
     validate_visual_design,
 )
 
-from app.intelligence.image_asset_manager import (
-    prepare_image_assets,
-    rewrite_for_render,
-)
-
 
 # ============================================================
 # RUNTIME DIRECTORIES
@@ -618,31 +613,6 @@ def main() -> None:
             "Jupiter currently accepts PDF and TXT sources."
         )
 
-    # --------------------------------------------------------
-    # IMAGE ASSET PREPARATION
-    # --------------------------------------------------------
-    #
-    # PDF extraction may produce local image files. Freeze those
-    # files into a deterministic per-job asset directory before
-    # the source workspace is cleaned up.
-    # --------------------------------------------------------
-
-    asset_root = (
-        JOBS_DIR
-        / JOB_ID
-        / "assets"
-    )
-
-    image_assets = prepare_image_assets(
-        artifact.get("images", []),
-        source_root=RUNNER_ROOT,
-        asset_root=asset_root,
-    )
-
-    print(
-        f"Prepared image assets = {len(image_assets)}"
-    )
-
     page_count = extract_page_count(
         artifact
     )
@@ -768,11 +738,6 @@ def main() -> None:
             fact_ledger=fact_ledger,
             subject=requested_subject,
         )
-    )
-
-    visual_design = rewrite_for_render(
-        visual_design,
-        image_assets,
     )
 
     # --------------------------------------------------------
@@ -993,83 +958,6 @@ def main() -> None:
         result_path,
     )
 
-    # Upload prepared image assets and freeze durable storage references.
-    from app.intelligence.image_asset_manager import upload_asset
-
-    uploaded_assets = []
-
-    for asset in image_assets:
-        if not isinstance(asset, dict):
-            continue
-
-        if not asset.get("available"):
-            continue
-
-        local_value = (
-            asset.get("path")
-            or asset.get("render_path")
-        )
-
-        if not local_value:
-            continue
-
-        local_asset = Path(
-            str(local_value)
-        ).resolve()
-
-        if not local_asset.exists():
-            continue
-
-        remote_asset = (
-            f"jobs/{JOB_ID}/assets/"
-            f"{local_asset.name}"
-        )
-
-        upload_asset(
-            supabase,
-            BUCKET,
-            local_asset,
-            remote_asset,
-        )
-
-        asset_copy = dict(asset)
-        asset_copy["storage_path"] = remote_asset
-        uploaded_assets.append(asset_copy)
-
-    result["visual_design"]["image_assets"] = uploaded_assets
-
-    # Re-upload analysis.json with durable asset references.
-    upload_json(
-        result,
-        result_path,
-    )
-
-    # Artifact 2 — teacher contract.
-    teacher_path = (
-        f"jobs/{JOB_ID}/teacher.json"
-    )
-
-    upload_json(
-        teacher_plan,
-        teacher_path,
-    )
-
-    # Artifact 3 — renderer contract.
-    visual_path = (
-        f"jobs/{JOB_ID}/visual.json"
-    )
-
-    upload_json(
-        result["visual_design"],
-        visual_path,
-    )
-
-    update_job(
-        teacher_path=teacher_path,
-        visual_path=visual_path,
-        result_path=result_path,
-    )
-
     # --------------------------------------------------------
     # SOURCE CLEANUP
     # --------------------------------------------------------
@@ -1107,8 +995,6 @@ def main() -> None:
         stage=final_stage,
         progress=100,
         result_path=result_path,
-        teacher_path=teacher_path,
-        visual_path=visual_path,
         error=None,
     )
 
