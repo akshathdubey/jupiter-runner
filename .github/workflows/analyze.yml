@@ -21,6 +21,24 @@ on:
           - normal
           - elite
 
+      target_seconds:
+        description: Exact target duration in seconds
+        required: false
+        default: "0"
+        type: string
+
+      subject:
+        description: User-selected subject
+        required: false
+        default: auto
+        type: string
+
+      capabilities:
+        description: JSON capability snapshot
+        required: false
+        default: "[]"
+        type: string
+
 permissions:
   contents: read
 
@@ -51,6 +69,9 @@ jobs:
           echo "JOB_ID=${{ inputs.job_id }}"
           echo "TARGET_MINUTES=${{ inputs.target_minutes }}"
           echo "QUALITY=${{ inputs.quality }}"
+          echo "TARGET_SECONDS=${{ inputs.target_seconds }}"
+          echo "SUBJECT=${{ inputs.subject }}"
+          echo "CAPABILITIES=${{ inputs.capabilities }}"
           echo ""
 
           uname -a
@@ -431,6 +452,9 @@ jobs:
         env:
           JOB_ID: ${{ inputs.job_id }}
           TARGET_MINUTES: ${{ inputs.target_minutes }}
+          TARGET_SECONDS: ${{ inputs.target_seconds }}
+          SUBJECT: ${{ inputs.subject }}
+          CAPABILITIES: ${{ inputs.capabilities }}
           QUALITY: ${{ inputs.quality }}
 
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

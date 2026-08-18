@@ -530,6 +530,54 @@ def main() -> None:
     )
 
     # --------------------------------------------------------
+    # CAPABILITY SNAPSHOT
+    # --------------------------------------------------------
+    # Capabilities are user/job metadata. They are persisted by the
+    # API and carried unchanged through analysis -> pricing -> render.
+    raw_capabilities = job.get("capabilities") or []
+
+    if isinstance(raw_capabilities, str):
+        try:
+            raw_capabilities = json.loads(raw_capabilities)
+        except Exception:
+            raw_capabilities = [
+                item.strip()
+                for item in raw_capabilities.split(",")
+                if item.strip()
+            ]
+
+    if not isinstance(raw_capabilities, list):
+        raw_capabilities = []
+
+    requested_capabilities = []
+    for capability in raw_capabilities:
+        value = str(capability).strip().lower()
+        if value and value not in requested_capabilities:
+            requested_capabilities.append(value)
+
+    print(
+        f"REQUESTED_CAPABILITIES = {requested_capabilities}"
+    )
+
+    target_seconds = (
+        int(job.get("target_seconds"))
+        if job.get("target_seconds") is not None
+        else TARGET_MINUTES * 60
+    )
+
+    if target_seconds != TARGET_MINUTES * 60:
+        raise RuntimeError(
+            "Target duration mismatch: "
+            f"database={target_seconds}s, "
+            f"workflow={TARGET_MINUTES * 60}s"
+        )
+
+    update_job(
+        target_seconds=target_seconds,
+        capabilities=requested_capabilities,
+    )
+
+    # --------------------------------------------------------
     # START
     # --------------------------------------------------------
 
@@ -638,6 +686,11 @@ def main() -> None:
         source_root=RUNNER_ROOT,
         asset_root=asset_root,
     )
+
+    if not isinstance(image_assets, list):
+        raise RuntimeError(
+            "Image asset manager returned an invalid asset registry."
+        )
 
     print(
         f"Prepared image assets = {len(image_assets)}"
@@ -948,7 +1001,11 @@ def main() -> None:
 
         "target_minutes": TARGET_MINUTES,
 
+        "target_seconds": target_seconds,
+
         "quality": db_quality,
+
+        "capabilities": requested_capabilities,
 
         "pricing_status": pricing.get(
             "status"
@@ -983,26 +1040,37 @@ def main() -> None:
     result_path = (
         f"jobs/{JOB_ID}/analysis.json"
     )
-
-    print(
-        f"Uploading result: {result_path}"
+    teacher_path = (
+        f"jobs/{JOB_ID}/teacher.json"
+    )
+    visual_path = (
+        f"jobs/{JOB_ID}/visual.json"
     )
 
-    upload_json(
-        result,
-        result_path,
-    )
+    # Upload referenced image assets first so the visual artifact contains
+    # durable storage paths rather than temporary runner filesystem paths.
+    from app.intelligence.image_asset_manager import upload_asset
 
-    # Image assets are kept separately from analysis.json so the render
-    # runner can download only the assets referenced by Artifact 3.
+    uploaded_assets = []
+
     for asset in image_assets:
-        local_asset = Path(asset["path"])
+        local_value = (
+            asset.get("path")
+            or asset.get("render_path")
+        )
+
+        if not local_value:
+            continue
+
+        local_asset = Path(local_value)
+
+        if not local_asset.exists():
+            continue
+
         remote_asset = (
             f"jobs/{JOB_ID}/assets/"
             f"{local_asset.name}"
         )
-
-        from app.intelligence.image_asset_manager import upload_asset
 
         upload_asset(
             supabase,
@@ -1011,13 +1079,38 @@ def main() -> None:
             remote_asset,
         )
 
-        asset["storage_path"] = remote_asset
+        asset_copy = dict(asset)
+        asset_copy["storage_path"] = remote_asset
+        uploaded_assets.append(asset_copy)
 
-    # Re-upload analysis.json with storage locations attached.
-    result["visual_design"]["image_assets"] = image_assets
+    # Canonical renderer-facing visual artifact.
+    visual_design["image_assets"] = uploaded_assets
+    result["visual_design"] = visual_design
+
+    # Persist the three artifacts separately. The analysis document is for
+    # the frontend; teacher.json and visual.json are the render contract.
     upload_json(
         result,
         result_path,
+    )
+
+    upload_json(
+        teacher_plan,
+        teacher_path,
+    )
+
+    upload_json(
+        visual_design,
+        visual_path,
+    )
+
+    update_job(
+        teacher_path=teacher_path,
+        visual_path=visual_path,
+        result_path=result_path,
+        capabilities=requested_capabilities,
+        target_seconds=target_seconds,
+        pricing_breakdown=pricing,
     )
 
     # --------------------------------------------------------

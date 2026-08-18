@@ -21,6 +21,24 @@ on:
         required: true
         type: string
 
+      target_seconds:
+        description: Exact target duration in seconds
+        required: false
+        default: "0"
+        type: string
+
+      subject:
+        description: Job subject
+        required: false
+        default: auto
+        type: string
+
+      capabilities:
+        description: JSON capability snapshot
+        required: false
+        default: "[]"
+        type: string
+
       tts_voice:
         description: TTS voice
         required: false
@@ -60,6 +78,9 @@ jobs:
           echo "========================================"
           echo "JOB_ID         = ${{ inputs.job_id }}"
           echo "TARGET_MINUTES = ${{ inputs.target_minutes }}"
+          echo "TARGET_SECONDS = ${{ inputs.target_seconds }}"
+          echo "SUBJECT        = ${{ inputs.subject }}"
+          echo "CAPABILITIES   = ${{ inputs.capabilities }}"
           echo "QUALITY        = ${{ inputs.quality }}"
           echo "TTS_VOICE      = ${{ inputs.tts_voice }}"
           echo "TTS_RATE       = ${{ inputs.tts_rate }}"
@@ -171,6 +192,9 @@ jobs:
         env:
           JOB_ID: ${{ inputs.job_id }}
           TARGET_MINUTES: ${{ inputs.target_minutes }}
+          TARGET_SECONDS: ${{ inputs.target_seconds }}
+          SUBJECT: ${{ inputs.subject }}
+          CAPABILITIES: ${{ inputs.capabilities }}
           QUALITY: ${{ inputs.quality }}
 
           TTS_VOICE: ${{ inputs.tts_voice }}
