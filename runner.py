@@ -68,6 +68,16 @@ def upload_video(local_path: Path, remote_path: str) -> None:
 
 def main() -> None:
     job = get_job()
+
+    print("========================================")
+    print("       JUPITER PRODUCTION JOB")
+    print("========================================")
+    print(f"JOB_ID         = {JOB_ID}")
+    print(f"DB_SUBJECT     = {job.get('subject')!r}")
+    print(f"TARGET_MINUTES = {TARGET_MINUTES}")
+    print(f"QUALITY        = {QUALITY}")
+    print("========================================")
+
     job_target_minutes = job.get(
         "target_minutes"
     )
@@ -93,7 +103,12 @@ def main() -> None:
     generate_final_video,
 )
 
-    pipeline_quality = "elite" if QUALITY == "premium" else "normal"
+    pipeline_quality = "elite" if QUALITY == "premium" else QUALITY
+
+    if pipeline_quality not in {"normal", "elite"}:
+        raise RuntimeError(
+            f"Invalid quality: {pipeline_quality}"
+        )
 
     with tempfile.TemporaryDirectory(prefix=f"jupiter-{JOB_ID}-") as temp_dir:
         work = Path(temp_dir)
