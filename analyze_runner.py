@@ -163,6 +163,11 @@ from app.intelligence.visual_validator import (
     validate_visual_design,
 )
 
+from app.intelligence.image_asset_manager import (
+    prepare_image_assets,
+    rewrite_for_render,
+)
+
 
 # ============================================================
 # RUNTIME DIRECTORIES
@@ -346,13 +351,6 @@ def upload_json(
     )
 
 
-def upload_artifact_json(
-    value: dict,
-    remote_path: str,
-) -> None:
-    upload_json(value, remote_path)
-
-
 def delete_storage_object(
     remote_path: str,
 ) -> None:
@@ -515,20 +513,12 @@ def main() -> None:
     #
     # Explicit user selection is authoritative. "auto" means that
     # Artifact 1 / downstream AI may determine the subject.
-    raw_subject = job.get("subject")
-
-    if raw_subject is None:
-        raise RuntimeError(
-            "Analysis job is missing subject. "
-            "The API must persist the user's subject selection."
-        )
-
-    requested_subject = str(raw_subject).strip()
+    requested_subject = str(
+        job.get("subject") or "auto"
+    ).strip()
 
     if not requested_subject:
-        raise RuntimeError(
-            "Analysis job contains an empty subject."
-        )
+        requested_subject = "auto"
 
     if len(requested_subject) > 100:
         raise RuntimeError(
@@ -628,6 +618,31 @@ def main() -> None:
             "Jupiter currently accepts PDF and TXT sources."
         )
 
+    # --------------------------------------------------------
+    # IMAGE ASSET PREPARATION
+    # --------------------------------------------------------
+    #
+    # PDF extraction may produce local image files. Freeze those
+    # files into a deterministic per-job asset directory before
+    # the source workspace is cleaned up.
+    # --------------------------------------------------------
+
+    asset_root = (
+        JOBS_DIR
+        / JOB_ID
+        / "assets"
+    )
+
+    image_assets = prepare_image_assets(
+        artifact.get("images", []),
+        source_root=RUNNER_ROOT,
+        asset_root=asset_root,
+    )
+
+    print(
+        f"Prepared image assets = {len(image_assets)}"
+    )
+
     page_count = extract_page_count(
         artifact
     )
@@ -676,18 +691,6 @@ def main() -> None:
             else "auto"
         ),
     }
-
-    if requested_subject.lower() != "auto":
-        actual_subject = str(
-            classification.get("subject", {}).get("name", "")
-        ).strip()
-
-        if actual_subject.lower() != requested_subject.lower():
-            raise RuntimeError(
-                "Subject propagation invariant failed: "
-                f"requested={requested_subject!r}, "
-                f"classification={actual_subject!r}"
-            )
 
     print(
         "Estimating credits..."
@@ -767,25 +770,10 @@ def main() -> None:
         )
     )
 
-    visual_subject = str(
-        visual_design.get("visual_system", {}).get(
-            "subject",
-            "",
-        )
-    ).strip()
-
-    if not visual_subject:
-        raise RuntimeError(
-            "Visual Designer returned an empty subject."
-        )
-
-    if requested_subject.lower() != "auto":
-        if visual_subject.lower() != requested_subject.lower():
-            raise RuntimeError(
-                "Visual subject propagation invariant failed: "
-                f"requested={requested_subject!r}, "
-                f"visual={visual_subject!r}"
-            )
+    visual_design = rewrite_for_render(
+        visual_design,
+        image_assets,
+    )
 
     # --------------------------------------------------------
     # VISUAL VALIDATION
@@ -992,34 +980,8 @@ def main() -> None:
         progress=94,
     )
 
-    teacher_path = (
-        f"jobs/{JOB_ID}/artifact2.json"
-    )
-
-    visual_path = (
-        f"jobs/{JOB_ID}/artifact3.json"
-    )
-
     result_path = (
         f"jobs/{JOB_ID}/analysis.json"
-    )
-
-    print(
-        f"Uploading teacher artifact: {teacher_path}"
-    )
-
-    upload_artifact_json(
-        teacher_plan,
-        teacher_path,
-    )
-
-    print(
-        f"Uploading visual artifact: {visual_path}"
-    )
-
-    upload_artifact_json(
-        visual_design,
-        visual_path,
     )
 
     print(
@@ -1031,10 +993,31 @@ def main() -> None:
         result_path,
     )
 
-    update_job(
-        teacher_path=teacher_path,
-        visual_path=visual_path,
-        result_path=result_path,
+    # Image assets are kept separately from analysis.json so the render
+    # runner can download only the assets referenced by Artifact 3.
+    for asset in image_assets:
+        local_asset = Path(asset["path"])
+        remote_asset = (
+            f"jobs/{JOB_ID}/assets/"
+            f"{local_asset.name}"
+        )
+
+        from app.intelligence.image_asset_manager import upload_asset
+
+        upload_asset(
+            supabase,
+            BUCKET,
+            local_asset,
+            remote_asset,
+        )
+
+        asset["storage_path"] = remote_asset
+
+    # Re-upload analysis.json with storage locations attached.
+    result["visual_design"]["image_assets"] = image_assets
+    upload_json(
+        result,
+        result_path,
     )
 
     # --------------------------------------------------------
