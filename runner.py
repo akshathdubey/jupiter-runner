@@ -123,7 +123,7 @@ def main() -> None:
         teacher = json.loads(teacher_file.read_text(encoding="utf-8"))
         visual = json.loads(visual_file.read_text(encoding="utf-8"))
 
-        update_job(stage="production_pipeline", progress=5)
+        update_job(stage="rendering", progress=25)
 
         result = generate_final_video(
             teacher,
