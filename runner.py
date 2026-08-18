@@ -52,6 +52,78 @@ def download_object(remote_path: str, local_path: Path) -> None:
     )
 
 
+def download_image_assets(
+    visual: dict,
+    work: Path,
+) -> dict:
+    assets = (
+        visual.get("image_assets")
+        or (visual.get("visual_system") or {}).get("image_assets")
+        or []
+    )
+
+    if not isinstance(assets, list):
+        return visual
+
+    asset_dir = work / "assets"
+    asset_dir.mkdir(parents=True, exist_ok=True)
+
+    resolved = []
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+
+        storage_path = str(
+            asset.get("storage_path") or ""
+        ).strip()
+
+        asset_id = str(
+            asset.get("id") or ""
+        ).strip()
+
+        if not storage_path or not asset_id:
+            continue
+
+        filename = Path(storage_path).name
+        local_path = asset_dir / filename
+
+        download_object(storage_path, local_path)
+
+        copy_asset = dict(asset)
+        copy_asset["path"] = str(local_path.resolve())
+        resolved.append(copy_asset)
+
+    visual = dict(visual)
+    visual["image_assets"] = resolved
+
+    registry = {
+        item["id"]: item
+        for item in resolved
+    }
+
+    scenes = []
+    for scene in visual.get("scenes", []) or []:
+        scene_copy = dict(scene)
+        primary = dict(scene_copy.get("primary_visual") or {})
+
+        image = primary.get("image")
+        if isinstance(image, dict):
+            image_copy = dict(image)
+            image_id = str(
+                image_copy.get("id") or ""
+            ).strip()
+            asset = registry.get(image_id)
+            if asset:
+                image_copy["path"] = asset["path"]
+            primary["image"] = image_copy
+
+        scene_copy["primary_visual"] = primary
+        scenes.append(scene_copy)
+
+    visual["scenes"] = scenes
+    return visual
+
+
 def upload_video(local_path: Path, remote_path: str) -> None:
     result = supabase.storage.from_(BUCKET).upload(
         remote_path,
@@ -123,7 +195,12 @@ def main() -> None:
         teacher = json.loads(teacher_file.read_text(encoding="utf-8"))
         visual = json.loads(visual_file.read_text(encoding="utf-8"))
 
-        update_job(stage="rendering", progress=25)
+        visual = download_image_assets(
+            visual,
+            work,
+        )
+
+        update_job(stage="production_pipeline", progress=5)
 
         result = generate_final_video(
             teacher,
