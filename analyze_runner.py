@@ -346,6 +346,13 @@ def upload_json(
     )
 
 
+def upload_artifact_json(
+    value: dict,
+    remote_path: str,
+) -> None:
+    upload_json(value, remote_path)
+
+
 def delete_storage_object(
     remote_path: str,
 ) -> None:
@@ -508,12 +515,20 @@ def main() -> None:
     #
     # Explicit user selection is authoritative. "auto" means that
     # Artifact 1 / downstream AI may determine the subject.
-    requested_subject = str(
-        job.get("subject") or "auto"
-    ).strip()
+    raw_subject = job.get("subject")
+
+    if raw_subject is None:
+        raise RuntimeError(
+            "Analysis job is missing subject. "
+            "The API must persist the user's subject selection."
+        )
+
+    requested_subject = str(raw_subject).strip()
 
     if not requested_subject:
-        requested_subject = "auto"
+        raise RuntimeError(
+            "Analysis job contains an empty subject."
+        )
 
     if len(requested_subject) > 100:
         raise RuntimeError(
@@ -662,6 +677,18 @@ def main() -> None:
         ),
     }
 
+    if requested_subject.lower() != "auto":
+        actual_subject = str(
+            classification.get("subject", {}).get("name", "")
+        ).strip()
+
+        if actual_subject.lower() != requested_subject.lower():
+            raise RuntimeError(
+                "Subject propagation invariant failed: "
+                f"requested={requested_subject!r}, "
+                f"classification={actual_subject!r}"
+            )
+
     print(
         "Estimating credits..."
     )
@@ -739,6 +766,26 @@ def main() -> None:
             subject=requested_subject,
         )
     )
+
+    visual_subject = str(
+        visual_design.get("visual_system", {}).get(
+            "subject",
+            "",
+        )
+    ).strip()
+
+    if not visual_subject:
+        raise RuntimeError(
+            "Visual Designer returned an empty subject."
+        )
+
+    if requested_subject.lower() != "auto":
+        if visual_subject.lower() != requested_subject.lower():
+            raise RuntimeError(
+                "Visual subject propagation invariant failed: "
+                f"requested={requested_subject!r}, "
+                f"visual={visual_subject!r}"
+            )
 
     # --------------------------------------------------------
     # VISUAL VALIDATION
@@ -945,8 +992,34 @@ def main() -> None:
         progress=94,
     )
 
+    teacher_path = (
+        f"jobs/{JOB_ID}/artifact2.json"
+    )
+
+    visual_path = (
+        f"jobs/{JOB_ID}/artifact3.json"
+    )
+
     result_path = (
         f"jobs/{JOB_ID}/analysis.json"
+    )
+
+    print(
+        f"Uploading teacher artifact: {teacher_path}"
+    )
+
+    upload_artifact_json(
+        teacher_plan,
+        teacher_path,
+    )
+
+    print(
+        f"Uploading visual artifact: {visual_path}"
+    )
+
+    upload_artifact_json(
+        visual_design,
+        visual_path,
     )
 
     print(
@@ -956,6 +1029,12 @@ def main() -> None:
     upload_json(
         result,
         result_path,
+    )
+
+    update_job(
+        teacher_path=teacher_path,
+        visual_path=visual_path,
+        result_path=result_path,
     )
 
     # --------------------------------------------------------
