@@ -500,6 +500,31 @@ def main() -> None:
         )
 
     # --------------------------------------------------------
+    # USER-SELECTED SUBJECT
+    # --------------------------------------------------------
+    # The frontend sends the subject with the analysis request and the
+    # API persists it on the Supabase job. The cloud runner must carry
+    # that value through the complete analysis pipeline.
+    #
+    # Explicit user selection is authoritative. "auto" means that
+    # Artifact 1 / downstream AI may determine the subject.
+    requested_subject = str(
+        job.get("subject") or "auto"
+    ).strip()
+
+    if not requested_subject:
+        requested_subject = "auto"
+
+    if len(requested_subject) > 100:
+        raise RuntimeError(
+            "Invalid job subject: must be 100 characters or fewer."
+        )
+
+    print(
+        f"REQUESTED_SUBJECT = {requested_subject}"
+    )
+
+    # --------------------------------------------------------
     # START
     # --------------------------------------------------------
 
@@ -626,6 +651,17 @@ def main() -> None:
         )
     )
 
+    # User-selected subject is metadata, not a source-grounded fact.
+    # It must override automatic classification when explicitly chosen.
+    classification["subject"] = {
+        "name": requested_subject,
+        "source": (
+            "user"
+            if requested_subject.lower() != "auto"
+            else "auto"
+        ),
+    }
+
     print(
         "Estimating credits..."
     )
@@ -700,6 +736,7 @@ def main() -> None:
             TARGET_MINUTES,
             db_quality,
             fact_ledger=fact_ledger,
+            subject=requested_subject,
         )
     )
 
@@ -822,6 +859,15 @@ def main() -> None:
 
     result = {
         "project_id": JOB_ID,
+
+        "subject": {
+            "name": requested_subject,
+            "source": (
+                "user"
+                if requested_subject.lower() != "auto"
+                else "auto"
+            ),
+        },
 
         "artifact": classification,
 
