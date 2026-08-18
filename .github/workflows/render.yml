@@ -130,6 +130,16 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Cache Python and Manim downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.cache/manim
+          key: jupiter-render-${{ runner.os }}-py311-${{ hashFiles('requirements.txt', 'jupiter-core/requirements.txt') }}
+          restore-keys: |
+            jupiter-render-${{ runner.os }}-py311-
+
       - name: Install runner dependencies
         run: |
           python -m pip install --upgrade pip
@@ -157,6 +167,8 @@ jobs:
           AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
           AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
           AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
+
+          JUPITER_WORK_DIR: ${{ github.workspace }}/.jupiter_jobs/${{ inputs.job_id }}
 
         run: |
           set -e
@@ -186,3 +198,11 @@ jobs:
 
         run: |
           python runner.py
+      - name: Retain Jupiter job diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jupiter-job-${{ inputs.job_id }}
+          path: .jupiter_jobs/${{ inputs.job_id }}/
+          if-no-files-found: ignore
+          retention-days: 14

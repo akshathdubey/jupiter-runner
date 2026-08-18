@@ -8,29 +8,19 @@ from pathlib import Path
 
 from supabase import create_client
 
+
 JOB_ID = os.environ["JOB_ID"]
-
-QUALITY = (
-    os.environ.get(
-        "QUALITY",
-        "normal",
-    )
-    .strip()
-    .lower()
-)
-
-TARGET_MINUTES = int(
-    os.environ.get(
-        "TARGET_MINUTES",
-        "5",
-    )
-)
+QUALITY = os.environ.get("QUALITY", "normal").strip().lower()
 TTS_VOICE = os.environ.get("TTS_VOICE", "en-US-AriaNeural")
 TTS_RATE = os.environ.get("TTS_RATE", "+0%")
 TTS_VOLUME = os.environ.get("TTS_VOLUME", "+0%")
+TARGET_MINUTES = int(os.environ.get("TARGET_MINUTES", "5"))
+
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 BUCKET = "jupiter-temp"
+
+ALLOWED_MINUTES = {3, 5, 10, 15, 30, 60}
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -40,23 +30,32 @@ def update_job(**values) -> None:
 
 
 def get_job() -> dict:
-    result = supabase.table("jobs").select("*").eq("id", JOB_ID).single().execute()
+    result = (
+        supabase.table("jobs")
+        .select("*")
+        .eq("id", JOB_ID)
+        .single()
+        .execute()
+    )
     if not result.data:
         raise RuntimeError(f"Job {JOB_ID} was not found.")
     return result.data
 
 
 def download_object(remote_path: str, local_path: Path) -> None:
-    local_path.write_bytes(
-        supabase.storage.from_(BUCKET).download(remote_path)
-    )
+    data = supabase.storage.from_(BUCKET).download(remote_path)
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    local_path.write_bytes(data)
 
 
 def download_image_assets(
     visual: dict,
     work: Path,
 ) -> dict:
-    """Download durable image assets and resolve renderer references."""
+    """
+    Download the durable image registry and resolve every selected
+    primary_visual reference to a local file.
+    """
     if not isinstance(visual, dict):
         raise TypeError("Visual artifact must be a dictionary.")
 
@@ -72,138 +71,156 @@ def download_image_assets(
     asset_dir = work / "assets"
     asset_dir.mkdir(parents=True, exist_ok=True)
 
-    resolved = []
+    resolved: list[dict] = []
 
-    for asset in assets:
-        if not isinstance(asset, dict):
+    for raw in assets:
+        if not isinstance(raw, dict):
             continue
 
-        storage_path = str(
-            asset.get("storage_path") or ""
-        ).strip()
-
-        asset_id = str(
-            asset.get("id") or ""
-        ).strip()
+        storage_path = str(raw.get("storage_path") or "").strip()
+        asset_id = str(raw.get("id") or "").strip()
 
         if not storage_path or not asset_id:
             continue
 
-        local_path = (
-            asset_dir
-            / Path(storage_path).name
-        )
+        local_path = asset_dir / Path(storage_path).name
+        download_object(storage_path, local_path)
 
-        download_object(
-            storage_path,
-            local_path,
-        )
-
-        copy_asset = dict(asset)
-        copy_asset["path"] = str(
-            local_path.resolve()
-        )
-        copy_asset["render_path"] = str(
-            local_path.resolve()
-        )
-
-        resolved.append(copy_asset)
+        asset = dict(raw)
+        asset["path"] = str(local_path.resolve())
+        asset["render_path"] = str(local_path.resolve())
+        asset["available"] = True
+        resolved.append(asset)
 
     visual = dict(visual)
     visual["image_assets"] = resolved
 
     registry = {
-        str(item["id"]): item
+        str(item["id"]).strip(): item
         for item in resolved
         if item.get("id")
     }
 
-    scenes = []
+    scenes_out: list[dict] = []
 
-    for scene in visual.get("scenes", []) or []:
-        if not isinstance(scene, dict):
+    for raw_scene in visual.get("scenes", []) or []:
+        if not isinstance(raw_scene, dict):
             continue
 
-        scene_copy = dict(scene)
-        primary = scene_copy.get(
-            "primary_visual"
-        )
+        scene = dict(raw_scene)
+        primary = scene.get("primary_visual")
 
         if not isinstance(primary, dict):
-            scenes.append(scene_copy)
+            scenes_out.append(scene)
             continue
 
-        primary_copy = dict(primary)
+        primary = dict(primary)
 
-        image_id = str(
-            primary_copy.get("image_id") or ""
-        ).strip()
+        # Canonical single image selection.
+        image_id = str(primary.get("image_id") or "").strip()
 
-        if image_id in registry:
-            primary_copy["render_path"] = registry[
-                image_id
-            ]["path"]
+        if image_id:
+            asset = registry.get(image_id)
+            if asset is None:
+                raise RuntimeError(
+                    f"Selected image asset {image_id!r} was not downloaded."
+                )
 
-        image_ids = primary_copy.get(
-            "image_ids"
-        )
+            path = str(asset["path"])
 
-        if isinstance(image_ids, list):
-            primary_copy["render_assets"] = [
-                {
-                    "id": str(image_id),
-                    "path": registry[
-                        str(image_id)
-                    ]["path"],
-                }
-                for image_id in image_ids
-                if str(image_id) in registry
-            ]
+            primary["render_path"] = path
+            primary["image"] = {
+                "id": image_id,
+                "caption": str(
+                    primary.get("caption")
+                    or asset.get("caption")
+                    or ""
+                ),
+                "role": str(
+                    primary.get("role")
+                    or asset.get("role")
+                    or asset.get("educational_role")
+                    or ""
+                ),
+                "fit": str(
+                    primary.get("fit")
+                    or asset.get("fit")
+                    or "contain"
+                ),
+                "position": str(
+                    primary.get("position") or "center"
+                ),
+            }
 
-        image = primary_copy.get(
-            "image"
-        )
-
+        # Existing canonical image reference.
+        image = primary.get("image")
         if isinstance(image, dict):
             image_copy = dict(image)
-
             nested_id = str(
                 image_copy.get("id")
                 or image_copy.get("image_id")
                 or ""
             ).strip()
 
-            if nested_id in registry:
-                image_copy["path"] = registry[
-                    nested_id
-                ]["path"]
+            if nested_id:
+                asset = registry.get(nested_id)
+                if asset is None:
+                    raise RuntimeError(
+                        f"Image reference {nested_id!r} is missing from storage."
+                    )
+                image_copy["path"] = asset["path"]
+                image_copy["render_path"] = asset["path"]
+                primary["image"] = image_copy
 
-                image_copy["render_path"] = registry[
-                    nested_id
-                ]["path"]
+        # Multiple image references.
+        image_ids = primary.get("image_ids")
+        if isinstance(image_ids, list):
+            render_assets = []
 
-            primary_copy["image"] = image_copy
+            for raw_id in image_ids[:4]:
+                image_id = str(raw_id).strip()
+                if not image_id:
+                    continue
 
-        scene_copy["primary_visual"] = primary_copy
-        scenes.append(scene_copy)
+                asset = registry.get(image_id)
+                if asset is None:
+                    raise RuntimeError(
+                        f"Image asset {image_id!r} is missing from storage."
+                    )
 
-    visual["scenes"] = scenes
+                render_assets.append(
+                    {
+                        "id": image_id,
+                        "path": asset["path"],
+                    }
+                )
 
+            primary["render_assets"] = render_assets
+
+        scene["primary_visual"] = primary
+        scenes_out.append(scene)
+
+    visual["scenes"] = scenes_out
     return visual
 
 
 def upload_video(local_path: Path, remote_path: str) -> None:
-    result = supabase.storage.from_(BUCKET).upload(
-        remote_path,
-        local_path.read_bytes(),
-        {
-            "content-type": "video/mp4",
-            "cache-control": "no-store",
-            "upsert": "true",
-        },
+    response = (
+        supabase.storage
+        .from_(BUCKET)
+        .upload(
+            remote_path,
+            local_path.read_bytes(),
+            {
+                "content-type": "video/mp4",
+                "cache-control": "no-store",
+                "upsert": "true",
+            },
+        )
     )
-    if getattr(result, "error", None):
-        raise RuntimeError(f"Video upload failed: {result.error}")
+    error = getattr(response, "error", None)
+    if error:
+        raise RuntimeError(f"Video upload failed: {error}")
 
 
 def main() -> None:
@@ -218,55 +235,73 @@ def main() -> None:
     print(f"QUALITY        = {QUALITY}")
     print("========================================")
 
-    job_target_minutes = job.get(
-        "target_minutes"
-    )
-
-    if (
-        job_target_minutes is not None
-        and int(job_target_minutes)
-        != TARGET_MINUTES
-    ):
+    if TARGET_MINUTES not in ALLOWED_MINUTES:
         raise RuntimeError(
-            "Job duration mismatch: "
-            f"database={job_target_minutes}, "
+            "Invalid duration. Allowed values are "
+            "3, 5, 10, 15, 30 and 60 minutes."
+        )
+
+    db_target = job.get("target_minutes")
+    if db_target is not None and int(db_target) != TARGET_MINUTES:
+        raise RuntimeError(
+            f"Job duration mismatch: database={db_target}, "
             f"workflow={TARGET_MINUTES}"
         )
+
     teacher_path = job.get("teacher_path")
     visual_path = job.get("visual_path")
+
     if not teacher_path or not visual_path:
-        raise RuntimeError("Job is missing input artifact paths.")
+        raise RuntimeError("Job is missing teacher_path or visual_path.")
 
-    sys.path.insert(0, str(Path(__file__).resolve().parent / "jupiter-core"))
+    runner_root = Path(__file__).resolve().parent
+    core_root = runner_root / "jupiter-core"
 
-    from app.intelligence.production_pipeline import (  # type: ignore[import-not-found]
-    generate_final_video,
-)
+    if not core_root.exists():
+        raise RuntimeError(f"Private jupiter-core not found: {core_root}")
+
+    sys.path.insert(0, str(core_root))
+
+    from app.intelligence.production_pipeline import generate_final_video
 
     pipeline_quality = "elite" if QUALITY == "premium" else QUALITY
-
     if pipeline_quality not in {"normal", "elite"}:
-        raise RuntimeError(
-            f"Invalid quality: {pipeline_quality}"
-        )
+        raise RuntimeError(f"Invalid quality: {pipeline_quality}")
 
     with tempfile.TemporaryDirectory(prefix=f"jupiter-{JOB_ID}-") as temp_dir:
         work = Path(temp_dir)
+
         teacher_file = work / "artifact2.json"
         visual_file = work / "artifact3.json"
         output_file = work / "final.mp4"
 
-        update_job(status="running", stage="downloading_inputs", progress=3)
+        update_job(
+            status="running",
+            stage="downloading_inputs",
+            progress=3,
+            error=None,
+        )
+
         download_object(teacher_path, teacher_file)
         download_object(visual_path, visual_file)
 
         teacher = json.loads(teacher_file.read_text(encoding="utf-8"))
         visual = json.loads(visual_file.read_text(encoding="utf-8"))
 
-        visual = download_image_assets(
-            visual,
-            work,
-        )
+        visual = download_image_assets(visual, work)
+
+        selected_count = 0
+        for scene in visual.get("scenes", []) or []:
+            primary = scene.get("primary_visual") if isinstance(scene, dict) else None
+            if isinstance(primary, dict) and (
+                primary.get("image_id")
+                or isinstance(primary.get("image"), dict)
+                or primary.get("image_ids")
+            ):
+                selected_count += 1
+
+        print(f"Resolved image assets = {len(visual.get('image_assets', []))}")
+        print(f"Scenes with image references = {selected_count}")
 
         def production_progress(
             stage: str,
@@ -314,7 +349,10 @@ def main() -> None:
         )
 
         if not result.get("passed"):
-            message = result.get("message", "Production pipeline failed.")
+            message = result.get(
+                "message",
+                "Production pipeline failed.",
+            )
             update_job(
                 status="failed",
                 stage=result.get("failed_stage", "production"),
@@ -329,15 +367,9 @@ def main() -> None:
                 "Production reported success but final.mp4 is missing."
             )
 
-        final_duration = result.get(
-            "final_duration_seconds"
-        )
-        audio_duration = result.get(
-            "audio_duration_seconds"
-        )
-        render_duration = result.get(
-            "retimed_visual_seconds"
-        )
+        final_duration = result.get("final_duration_seconds")
+        audio_duration = result.get("audio_duration_seconds")
+        render_duration = result.get("retimed_visual_seconds")
 
         update_job(
             stage="uploading",
