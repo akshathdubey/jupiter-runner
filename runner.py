@@ -16,7 +16,10 @@ QUALITY = os.environ.get("QUALITY", "normal").strip().lower()
 TTS_VOICE = os.environ.get("TTS_VOICE", "en-US-AriaNeural")
 TTS_RATE = os.environ.get("TTS_RATE", "+0%")
 TTS_VOLUME = os.environ.get("TTS_VOLUME", "+0%")
-TARGET_MINUTES = int(os.environ.get("TARGET_MINUTES", "5"))
+try:
+    TARGET_MINUTES = int(os.environ.get("TARGET_MINUTES", "5"))
+except ValueError as exc:
+    raise RuntimeError("TARGET_MINUTES must be an integer.") from exc
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
@@ -24,6 +27,18 @@ SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 BUCKET = "jupiter-temp"
 
 ALLOWED_MINUTES = {3, 5, 10, 15, 30, 60}
+
+if TARGET_MINUTES not in ALLOWED_MINUTES:
+    raise RuntimeError(
+        f"Unsupported TARGET_MINUTES={TARGET_MINUTES}. "
+        f"Allowed values: {sorted(ALLOWED_MINUTES)}"
+    )
+
+if QUALITY not in {"normal", "elite"}:
+    raise RuntimeError(
+        f"Unsupported QUALITY={QUALITY!r}. "
+        "Allowed values: normal, elite."
+    )
 
 supabase = create_client(
     SUPABASE_URL,
@@ -82,17 +97,24 @@ def download_object(
         exist_ok=True,
     )
 
-    local_path.write_bytes(data)
+    tmp_path = local_path.with_suffix(
+        local_path.suffix + ".part"
+    )
 
-    if not local_path.exists():
+    tmp_path.write_bytes(data)
+
+    if not tmp_path.exists():
         raise RuntimeError(
             f"Downloaded object was not created: {local_path}"
         )
 
-    if local_path.stat().st_size == 0:
+    if tmp_path.stat().st_size == 0:
+        tmp_path.unlink(missing_ok=True)
         raise RuntimeError(
             f"Downloaded object is empty: {remote_path}"
         )
+
+    tmp_path.replace(local_path)
 
 
 
@@ -1057,6 +1079,11 @@ def main() -> None:
                 output_file,
                 remote_output,
             )
+
+            # Preserve a local copy for the GitHub artifact/debug bundle.
+            # The production workspace is temporary and is deleted at exit.
+            debug_output = debug_root / "final.mp4"
+            shutil.copy2(output_file, debug_output)
 
             update_job(
                 status="completed",
