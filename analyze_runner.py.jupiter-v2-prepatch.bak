@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import os
@@ -57,14 +57,14 @@ RUNNER_ROOT = (
 # GitHub Actions layout:
 #
 # jupiter-runner/
-# â”œâ”€â”€ analyze_runner.py
-# â””â”€â”€ jupiter-core/
+# ├── analyze_runner.py
+# └── jupiter-core/
 #
 # Local layout:
 #
 # jupiter/
-# â”œâ”€â”€ jupiter-runner/
-# â””â”€â”€ jupiter-core/
+# ├── jupiter-runner/
+# └── jupiter-core/
 
 CORE_CANDIDATES = [
     RUNNER_ROOT / "jupiter-core",
@@ -149,12 +149,6 @@ from app.intelligence.teacher_reviewer import (
 
 from app.intelligence.visual_designer import (
     create_visual_design,
-)
-
-from app.intelligence.image_asset_manager import (
-    prepare_image_assets,
-    rewrite_for_render,
-    upload_asset,
 )
 
 from app.intelligence.visual_reviewer import (
@@ -628,21 +622,6 @@ def main() -> None:
     )
 
     # --------------------------------------------------------
-    # PREPARE SOURCE IMAGE ASSETS
-    # --------------------------------------------------------
-    asset_root = JOBS_DIR / JOB_ID / "assets"
-
-    image_assets = prepare_image_assets(
-        artifact.get("images", []),
-        source_root=RUNNER_ROOT,
-        asset_root=asset_root,
-    )
-
-    print(
-        f"Prepared image assets = {len(image_assets)}"
-    )
-
-    # --------------------------------------------------------
     # RESET LLM USAGE ACCOUNTING
     # --------------------------------------------------------
     # Accounting only.
@@ -758,7 +737,6 @@ def main() -> None:
             db_quality,
             fact_ledger=fact_ledger,
             subject=requested_subject,
-            image_assets=(image_assets.get("image_assets", []) if isinstance(image_assets, dict) else image_assets),
         )
     )
 
@@ -809,75 +787,6 @@ def main() -> None:
                 db_quality,
             )
         )
-
-    # --------------------------------------------------------
-    # FREEZE ONLY SELECTED SOURCE IMAGES
-    # --------------------------------------------------------
-    selected_image_ids: list[str] = []
-
-    for scene in visual_design.get("scenes", []) or []:
-        if not isinstance(scene, dict):
-            continue
-        primary = scene.get("primary_visual")
-        if not isinstance(primary, dict):
-            continue
-
-        candidates: list[object] = []
-        if primary.get("image_id"):
-            candidates.append(primary.get("image_id"))
-
-        raw_ids = primary.get("image_ids")
-        if isinstance(raw_ids, list):
-            candidates.extend(raw_ids)
-
-        nested = primary.get("image")
-        if isinstance(nested, dict):
-            candidates.extend([nested.get("id"), nested.get("image_id")])
-
-        for raw_id in candidates:
-            value = str(raw_id or "").strip()
-            if value and value not in selected_image_ids:
-                selected_image_ids.append(value)
-
-    prepared_by_id = {
-        str(asset.get("id")).strip(): asset
-        for asset in image_assets
-        if isinstance(asset, dict) and asset.get("id")
-    }
-
-    selected_assets: list[dict] = []
-
-    for image_id in selected_image_ids:
-        asset = prepared_by_id.get(image_id)
-        if asset is None:
-            raise RuntimeError(
-                f"Visual design selected image {image_id!r}, "
-                "but the prepared source asset does not exist."
-            )
-
-        local_path = Path(str(asset.get("path") or "")).resolve()
-        remote_path = f"jobs/{JOB_ID}/assets/{local_path.name}"
-
-        upload_asset(
-            supabase,
-            BUCKET,
-            local_path,
-            remote_path,
-        )
-
-        uploaded_asset = dict(asset)
-        uploaded_asset["storage_path"] = remote_path
-        selected_assets.append(uploaded_asset)
-
-    visual_design = rewrite_for_render(
-        visual_design,
-        selected_assets,
-    )
-
-    print(
-        f"Selected source images = {len(selected_assets)} / "
-        f"{len(image_assets)}"
-    )
 
     # --------------------------------------------------------
     # BLUEPRINT
@@ -944,14 +853,6 @@ def main() -> None:
         f"{pricing.get('final_price')}"
     )
 
-    final_price = float(pricing.get("final_price") or 0)
-    update_job(
-        target_seconds=TARGET_MINUTES * 60,
-        pricing_breakdown=pricing,
-        amount_paise=int(round(final_price * 100)),
-        currency=str(pricing.get("currency") or "INR"),
-    )
-
     # --------------------------------------------------------
     # FINAL RESULT
     # --------------------------------------------------------
@@ -1002,7 +903,6 @@ def main() -> None:
                     [],
                 )
             ),
-            "selected_images": len(selected_assets),
             "equations": len(
                 classification.get(
                     "equations",

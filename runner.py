@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 from supabase import create_client
@@ -250,119 +249,133 @@ def main() -> None:
             f"Invalid quality: {pipeline_quality}"
         )
 
-    with tempfile.TemporaryDirectory(prefix=f"jupiter-{JOB_ID}-") as temp_dir:
-        work = Path(temp_dir)
-        teacher_file = work / "artifact2.json"
-        visual_file = work / "artifact3.json"
-        output_file = work / "final.mp4"
-
-        update_job(status="running", stage="downloading_inputs", progress=3)
-        download_object(teacher_path, teacher_file)
-        download_object(visual_path, visual_file)
-
-        teacher = json.loads(teacher_file.read_text(encoding="utf-8"))
-        visual = json.loads(visual_file.read_text(encoding="utf-8"))
-
-        visual = download_image_assets(
-            visual,
-            work,
+    work = Path(
+        os.environ.get(
+            "JUPITER_WORK_DIR",
+            str(
+                Path(__file__).resolve().parent
+                / ".jupiter_jobs"
+                / JOB_ID
+            ),
         )
+    ).resolve()
 
-        def production_progress(
-            stage: str,
-            progress: int,
-            details: dict | None = None,
-        ) -> None:
-            values = {
-                "status": "running",
-                "stage": stage,
-                "progress": int(progress),
-                "error": None,
-            }
+    work.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
-            if details:
-                if details.get("audio_duration_seconds") is not None:
-                    values["audio_duration_seconds"] = details[
-                        "audio_duration_seconds"
-                    ]
+    teacher_file = work / "artifact2.json"
+    visual_file = work / "artifact3.json"
+    output_file = work / "final.mp4"
 
-                if details.get("visual_duration_seconds") is not None:
-                    values["render_duration_seconds"] = details[
-                        "visual_duration_seconds"
-                    ]
+    update_job(status="running", stage="downloading_inputs", progress=3)
+    download_object(teacher_path, teacher_file)
+    download_object(visual_path, visual_file)
 
-            update_job(**values)
+    teacher = json.loads(teacher_file.read_text(encoding="utf-8"))
+    visual = json.loads(visual_file.read_text(encoding="utf-8"))
 
+    visual = download_image_assets(
+        visual,
+        work,
+    )
+
+    def production_progress(
+        stage: str,
+        progress: int,
+        details: dict | None = None,
+    ) -> None:
+        values = {
+            "status": "running",
+            "stage": stage,
+            "progress": int(progress),
+            "error": None,
+        }
+
+        if details:
+            if details.get("audio_duration_seconds") is not None:
+                values["audio_duration_seconds"] = details[
+                    "audio_duration_seconds"
+                ]
+
+            if details.get("visual_duration_seconds") is not None:
+                values["render_duration_seconds"] = details[
+                    "visual_duration_seconds"
+                ]
+
+        update_job(**values)
+
+    update_job(
+        stage="production_started",
+        progress=5,
+        render_attempt=int(job.get("render_attempt") or 0) + 1,
+        error=None,
+    )
+
+    result = generate_final_video(
+        teacher,
+        visual,
+        output_file,
+        quality=pipeline_quality,
+        tts_voice=TTS_VOICE,
+        tts_rate=TTS_RATE,
+        tts_volume=TTS_VOLUME,
+        max_repair_cycles=2,
+        render_timeout_seconds=1200,
+        progress_callback=production_progress,
+    )
+
+    if not result.get("passed"):
+        message = result.get("message", "Production pipeline failed.")
         update_job(
-            stage="production_started",
-            progress=5,
-            render_attempt=int(job.get("render_attempt") or 0) + 1,
-            error=None,
-        )
-
-        result = generate_final_video(
-            teacher,
-            visual,
-            output_file,
-            quality=pipeline_quality,
-            tts_voice=TTS_VOICE,
-            tts_rate=TTS_RATE,
-            tts_volume=TTS_VOLUME,
-            max_repair_cycles=2,
-            render_timeout_seconds=1200,
-            progress_callback=production_progress,
-        )
-
-        if not result.get("passed"):
-            message = result.get("message", "Production pipeline failed.")
-            update_job(
-                status="failed",
-                stage=result.get("failed_stage", "production"),
-                progress=100,
-                error=message,
-                completed_at="now()",
-            )
-            raise RuntimeError(message)
-
-        if not output_file.exists():
-            raise RuntimeError(
-                "Production reported success but final.mp4 is missing."
-            )
-
-        final_duration = result.get(
-            "final_duration_seconds"
-        )
-        audio_duration = result.get(
-            "audio_duration_seconds"
-        )
-        render_duration = result.get(
-            "retimed_visual_seconds"
-        )
-
-        update_job(
-            stage="uploading",
-            progress=97,
-            render_duration_seconds=render_duration,
-            audio_duration_seconds=audio_duration,
-            final_video_duration_seconds=final_duration,
-        )
-
-        remote_output = f"jobs/{JOB_ID}/final.mp4"
-        upload_video(output_file, remote_output)
-
-        update_job(
-            status="completed",
-            stage="completed",
+            status="failed",
+            stage=result.get("failed_stage", "production"),
             progress=100,
-            output_path=remote_output,
-            render_duration_seconds=render_duration,
-            audio_duration_seconds=audio_duration,
-            final_video_duration_seconds=final_duration,
-            error=None,
+            error=message,
+            completed_at="now()",
+        )
+        raise RuntimeError(message)
+
+    if not output_file.exists():
+        raise RuntimeError(
+            "Production reported success but final.mp4 is missing."
         )
 
-        print("JUPITER PRODUCTION = SUCCESS")
-        print(f"OUTPUT = {remote_output}")
+    final_duration = result.get(
+        "final_duration_seconds"
+    )
+    audio_duration = result.get(
+        "audio_duration_seconds"
+    )
+    render_duration = result.get(
+        "retimed_visual_seconds"
+    )
+
+    update_job(
+        stage="uploading",
+        progress=97,
+        render_duration_seconds=render_duration,
+        audio_duration_seconds=audio_duration,
+        final_video_duration_seconds=final_duration,
+    )
+
+    remote_output = f"jobs/{JOB_ID}/final.mp4"
+    upload_video(output_file, remote_output)
+
+    update_job(
+        status="completed",
+        stage="completed",
+        progress=100,
+        output_path=remote_output,
+        render_duration_seconds=render_duration,
+        audio_duration_seconds=audio_duration,
+        final_video_duration_seconds=final_duration,
+        error=None,
+    )
+
+    print("JUPITER PRODUCTION = SUCCESS")
+    print(f"OUTPUT = {remote_output}")
 
 
 if __name__ == "__main__":
