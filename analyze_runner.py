@@ -810,34 +810,24 @@ def main() -> None:
             )
         )
 
-    # --------------------------------------------------------
-    # FREEZE ONLY SELECTED SOURCE IMAGES
-    # --------------------------------------------------------
-    selected_image_ids: list[str] = []
+# FINAL IMAGE-RESOLUTION BLOCK FOR analyze_runner.py
+# Replace the existing "FREEZE ONLY SELECTED SOURCE IMAGES" block.
 
-    for scene in visual_design.get("scenes", []) or []:
-        if not isinstance(scene, dict):
-            continue
-        primary = scene.get("primary_visual")
-        if not isinstance(primary, dict):
-            continue
+    print("Resolving source images for renderer...")
 
-        candidates: list[object] = []
-        if primary.get("image_id"):
-            candidates.append(primary.get("image_id"))
+# This call is intentionally made BEFORE reading selected_image_ids.
+# image_asset_manager now fills omitted image IDs deterministically from
+# the prepared source-image catalog.
+    visual_design = rewrite_for_render(
+        visual_design,
+        image_assets,
+    )
 
-        raw_ids = primary.get("image_ids")
-        if isinstance(raw_ids, list):
-            candidates.extend(raw_ids)
-
-        nested = primary.get("image")
-        if isinstance(nested, dict):
-            candidates.extend([nested.get("id"), nested.get("image_id")])
-
-        for raw_id in candidates:
-            value = str(raw_id or "").strip()
-            if value and value not in selected_image_ids:
-                selected_image_ids.append(value)
+    selected_image_ids = [
+        str(value).strip()
+        for value in (visual_design.get("selected_image_ids") or [])
+        if str(value).strip()
+    ]
 
     prepared_by_id = {
         str(asset.get("id")).strip(): asset
@@ -845,18 +835,28 @@ def main() -> None:
         if isinstance(asset, dict) and asset.get("id")
     }
 
-    selected_assets: list[dict] = []
+    selected_assets = []
 
     for image_id in selected_image_ids:
         asset = prepared_by_id.get(image_id)
         if asset is None:
             raise RuntimeError(
-                f"Visual design selected image {image_id!r}, "
+                f"Resolved visual design selected image {image_id!r}, "
                 "but the prepared source asset does not exist."
             )
 
-        local_path = Path(str(asset.get("path") or "")).resolve()
-        remote_path = f"jobs/{JOB_ID}/assets/{local_path.name}"
+        local_path = Path(
+            str(asset.get("path") or asset.get("render_path") or "")
+        ).resolve()
+
+        if not local_path.exists():
+            raise RuntimeError(
+                f"Resolved source image does not exist: {local_path}"
+            )
+
+        remote_path = (
+            f"jobs/{JOB_ID}/assets/{local_path.name}"
+        )
 
         upload_asset(
             supabase,
@@ -869,10 +869,14 @@ def main() -> None:
         uploaded_asset["storage_path"] = remote_path
         selected_assets.append(uploaded_asset)
 
+    # Rebuild renderer metadata using the uploaded/frozen assets.
     visual_design = rewrite_for_render(
         visual_design,
         selected_assets,
     )
+
+    visual_design["image_assets"] = selected_assets
+    visual_design["selected_image_ids"] = selected_image_ids
 
     print(
         f"Selected source images = {len(selected_assets)} / "
