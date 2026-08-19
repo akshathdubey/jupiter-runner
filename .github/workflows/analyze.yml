@@ -1,5 +1,7 @@
 name: Jupiter Analyze
 
+run-name: Jupiter Analyze - ${{ inputs.job_id }}
+
 on:
   workflow_dispatch:
     inputs:
@@ -90,9 +92,9 @@ jobs:
           set -euo pipefail
           missing=0
           command -v pkg-config >/dev/null 2>&1 || missing=1
-          pkg-config --exists cairo || missing=1
-          pkg-config --exists pangocairo || missing=1
-          pkg-config --exists glib-2.0 || missing=1
+          pkg-config --exists cairo >/dev/null 2>&1 || missing=1
+          pkg-config --exists pangocairo >/dev/null 2>&1 || missing=1
+          pkg-config --exists glib-2.0 >/dev/null 2>&1 || missing=1
           if [ "$missing" -eq 1 ]; then
             sudo apt-get update -y
             sudo apt-get install -y --no-install-recommends pkg-config libcairo2-dev libpango1.0-dev libpangocairo-1.0-0 libglib2.0-dev
@@ -145,7 +147,8 @@ jobs:
           import app.visual_engine
           from app.intelligence.llm_gateway import LLMGateway
           from app.intelligence.dynamic_token_budget import ModelCatalog
-          models = ModelCatalog(os.environ["AICREDITS_API_KEY"], "https://api.aicredits.in/v1").refresh()
+          catalog = ModelCatalog(os.environ["AICREDITS_API_KEY"], "https://api.aicredits.in/v1")
+          models = catalog.refresh()
           assert models
           print("ZERO-CREDIT PREFLIGHT = OK")
           print("MODELS =", ", ".join(m.id for m in models))
