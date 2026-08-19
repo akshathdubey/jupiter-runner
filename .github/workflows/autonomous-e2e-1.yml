@@ -1,6 +1,6 @@
-name: Jupiter Autonomous E2E #1
+name: "Jupiter Autonomous E2E #1"
 
-run-name: Jupiter Autonomous E2E #1
+run-name: "Jupiter Autonomous E2E #1"
 
 on:
   workflow_dispatch:
