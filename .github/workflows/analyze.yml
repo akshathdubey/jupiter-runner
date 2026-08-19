@@ -471,6 +471,12 @@ jobs:
       # ANALYSIS
       # ==========================================================
 
+      - name: Static audit Jupiter Python tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/audit_jupiter_imports.py
+
       - name: Run Jupiter analysis
         env:
           JOB_ID: ${{ inputs.job_id }}
