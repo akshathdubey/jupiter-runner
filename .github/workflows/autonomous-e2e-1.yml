@@ -3,6 +3,14 @@ name: "Jupiter Autonomous E2E #1"
 run-name: "Jupiter Autonomous E2E #1"
 
 on:
+  push:
+    paths:
+      - ".github/workflows/autonomous-e2e-1.yml"
+      - "scripts/autonomous_e2e_1.py"
+      - ".github/workflows/render.yml"
+      - "runner.py"
+      - "analyze_runner.py"
+      - "scripts/audit_jupiter_imports.py"
   workflow_dispatch:
     inputs:
       base_url:
@@ -24,19 +32,19 @@ concurrency:
   group: jupiter-autonomous-e2e-1
   cancel-in-progress: false
 
+env:
+  JUPITER_E2E_BASE_URL: ${{ inputs.base_url || 'https://jupiter.zenithxlabs.com' }}
+  JUPITER_E2E_MINUTES: ${{ inputs.target_minutes || '3' }}
+  GITHUB_OWNER: akshathdubey
+  GITHUB_REPO: jupiter-runner
+  GITHUB_RENDER_WORKFLOW: render.yml
+  JUPITER_AICREDITS_OFFLINE_CATALOG: "true"
+
 jobs:
   e2e:
     name: Clean PDF → analysis → lesson → video
     runs-on: ubuntu-24.04
     timeout-minutes: 240
-    env:
-      JUPITER_E2E_BASE_URL: ${{ inputs.base_url }}
-      JUPITER_E2E_MINUTES: ${{ inputs.target_minutes }}
-      GITHUB_OWNER: akshathdubey
-      GITHUB_REPO: jupiter-runner
-      GITHUB_RENDER_WORKFLOW: render.yml
-      JUPITER_AICREDITS_OFFLINE_CATALOG: "true"
-
     steps:
       - name: Checkout runner
         uses: actions/checkout@v4
@@ -52,6 +60,13 @@ jobs:
           sudo apt-get install -y --no-install-recommends ffmpeg
           python -m pip install --upgrade pip
           python -m pip install "supabase>=2.18,<3" reportlab
+
+      - name: Static source audit before E2E
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile analyze_runner.py runner.py scripts/autonomous_e2e_1.py scripts/audit_jupiter_imports.py
+          python scripts/audit_jupiter_imports.py
 
       - name: Run autonomous clean E2E #1
         env:
