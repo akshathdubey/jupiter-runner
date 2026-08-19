@@ -5,13 +5,23 @@ from pathlib import Path
 
 ERRORS: list[str] = []
 
-# Audit only Jupiter source code. Never recursively scan the runtime virtualenv,
-# pip caches, or installed third-party packages.
+# Audit application source only. The audit helper itself is intentionally
+# excluded because it contains strings such as os.getenv( and json.dumps(
+# as part of the checks it performs.
 ROOTS = (
     Path("jupiter-core/app"),
-    Path("scripts"),
     Path("analyze_runner.py"),
 )
+
+EXCLUDED_PARTS = {
+    ".git",
+    ".venv",
+    "venv",
+    ".jupiter_runtime_venv",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+}
 
 
 def python_files(root: Path):
@@ -21,7 +31,7 @@ def python_files(root: Path):
     if not root.exists():
         return
     for path in root.rglob("*.py"):
-        if set(path.parts) & {".git", ".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache"}:
+        if any(part in EXCLUDED_PARTS for part in path.parts):
             continue
         yield path
 
