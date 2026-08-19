@@ -704,6 +704,7 @@ def main() -> None:
     from app.intelligence.production_pipeline import (
         generate_final_video,
     )
+    from app.visual_engine import normalize_visual_design
 
     pipeline_quality = (
         "elite"
@@ -936,6 +937,12 @@ def main() -> None:
 
             print(
                 "Starting production pipeline..."
+            )
+            print(
+                "Visual engine = 1.0"
+            )
+            print(
+                "Visual engine image-integrity retries enabled"
             )
 
             result = generate_final_video(
