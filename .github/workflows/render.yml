@@ -241,45 +241,54 @@ jobs:
           python --version
           python -c "import sys; print(sys.executable)"
 
+      - name: Restore Jupiter Python environment cache
+        id: python-venv-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .jupiter_runtime_venv
+            .jupiter_cache
+          key: jupiter-${{ runner.os }}-py311-render-${{ hashFiles('requirements.txt', 'jupiter-core/requirements.txt', 'jupiter-core/pyproject.toml') }}-v2
+
       # ==========================================================
       # PYTHON DEPENDENCIES
       # ==========================================================
 
-      - name: Install Python dependencies
+      - name: Prepare cached Jupiter Python environment
         shell: bash
         run: |
           set -euo pipefail
 
-          python -m pip install --upgrade pip
+          VENV_DIR="${GITHUB_WORKSPACE}/.jupiter_runtime_venv"
 
-          if [ -f requirements.txt ]; then
-            python -m pip install -r requirements.txt
+          if [ ! -x "${VENV_DIR}/bin/python" ]; then
+            rm -rf "${VENV_DIR}"
+            python -m venv "${VENV_DIR}"
+            "${VENV_DIR}/bin/python" -m pip install --upgrade pip
+
+            if [ -f requirements.txt ]; then
+              "${VENV_DIR}/bin/python" -m pip install -r requirements.txt
+            fi
+
+            if [ -f jupiter-core/requirements.txt ]; then
+              "${VENV_DIR}/bin/python" -m pip install -r jupiter-core/requirements.txt
+            fi
+
+            "${VENV_DIR}/bin/python" -m pip install \
+              "manim>=0.19,<0.20" \
+              edge-tts
+
+            "${VENV_DIR}/bin/python" -m pip install -e jupiter-core
+          else
+            echo "Using cached Jupiter Python environment."
           fi
 
-          if [ -f jupiter-core/requirements.txt ]; then
-            python -m pip install -r jupiter-core/requirements.txt
-          fi
+          echo "${VENV_DIR}/bin" >> "${GITHUB_PATH}"
+          echo "VIRTUAL_ENV=${VENV_DIR}" >> "${GITHUB_ENV}"
 
-          python -m pip install \
-            "manim>=0.19,<0.20" \
-            edge-tts
-
-          echo ""
-          echo "========================================"
-          echo "PRODUCTION DEPENDENCIES"
-          echo "========================================"
-
-          python -m manim --version
-
-          python - <<'PY'
-          import edge_tts
-          print("EDGE TTS = OK")
-          PY
-
-          python - <<'PY'
-          import requests
-          print("REQUESTS = OK")
-          PY
+          "${VENV_DIR}/bin/python" --version
+          "${VENV_DIR}/bin/python" -m manim --version
+          "${VENV_DIR}/bin/python" -c "import edge_tts, requests, cv2, numpy, sympy; print('VISUAL ENGINE DEPS = OK')"
 
       # ==========================================================
       # PRODUCTION ENVIRONMENT
@@ -338,6 +347,7 @@ jobs:
 
           python - <<'PY'
           import app
+          import app.visual_engine
 
           from app.config import settings
           from app.intelligence.production_pipeline import generate_final_video

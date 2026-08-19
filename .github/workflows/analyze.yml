@@ -263,6 +263,15 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
+      - name: Restore Jupiter Python environment cache
+        id: python-venv-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .jupiter_runtime_venv
+            .jupiter_cache
+          key: jupiter-${{ runner.os }}-py311-analyze-${{ hashFiles('requirements.txt', 'jupiter-core/requirements.txt', 'jupiter-core/pyproject.toml') }}-v2
+
       # ==========================================================
       # RUNTIME DIRECTORIES
       # ==========================================================
@@ -298,34 +307,35 @@ jobs:
       # RUNNER DEPENDENCIES
       # ==========================================================
 
-      - name: Install runner dependencies
+      - name: Prepare cached Jupiter Python environment
         shell: bash
         run: |
           set -euo pipefail
 
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          VENV_DIR="${GITHUB_WORKSPACE}/.jupiter_runtime_venv"
 
-      # ==========================================================
-      # PRIVATE CORE DEPENDENCIES
-      # ==========================================================
-      
+          if [ ! -x "${VENV_DIR}/bin/python" ]; then
+            rm -rf "${VENV_DIR}"
+            python -m venv "${VENV_DIR}"
+            "${VENV_DIR}/bin/python" -m pip install --upgrade pip
 
-      - name: Install private core dependencies
-        working-directory: jupiter-core
-        shell: bash
-        run: |
-          set -euo pipefail
+            "${VENV_DIR}/bin/python" -m pip install -r requirements.txt
 
-          python -m pip install --upgrade pip
+            if [ -f jupiter-core/requirements.txt ]; then
+              "${VENV_DIR}/bin/python" -m pip install -r jupiter-core/requirements.txt
+            fi
 
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
+            "${VENV_DIR}/bin/python" -m pip install requests
+            "${VENV_DIR}/bin/python" -m pip install -e jupiter-core
+          else
+            echo "Using cached Jupiter Python environment."
           fi
 
-          pip install requests
+          echo "${VENV_DIR}/bin" >> "${GITHUB_PATH}"
+          echo "VIRTUAL_ENV=${VENV_DIR}" >> "${GITHUB_ENV}"
 
-          pip install -e .
+          "${VENV_DIR}/bin/python" --version
+          "${VENV_DIR}/bin/python" -c "import requests; print('REQUESTS = OK')"
 
       # ==========================================================
       # CRITICAL IMPORT TESTS
