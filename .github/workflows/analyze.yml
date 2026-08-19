@@ -154,6 +154,58 @@ jobs:
           print("MODELS =", ", ".join(m.id for m in models))
           PY
 
+      - name: Verify Supabase job contract and claim workflow run
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from supabase import create_client
+
+          supabase = create_client(
+              os.environ["SUPABASE_URL"],
+              os.environ["SUPABASE_SERVICE_ROLE_KEY"],
+          )
+          job_id = os.environ["JOB_ID"]
+          required = (
+              "id,kind,status,stage,progress,quality,target_minutes,"
+              "document_path,result_path,workflow_run_id"
+          )
+          result = (
+              supabase.table("jobs")
+              .select(required)
+              .eq("id", job_id)
+              .single()
+              .execute()
+          )
+          job = result.data
+          if not job:
+              raise RuntimeError(f"Analysis job {job_id} was not found.")
+          if job.get("kind") != "analysis":
+              raise RuntimeError(f"Job {job_id} is not an analysis job.")
+          if not job.get("document_path"):
+              raise RuntimeError(f"Analysis job {job_id} has no document_path.")
+
+          workflow_run_id = os.environ.get("GITHUB_RUN_ID")
+          if workflow_run_id:
+              update = (
+                  supabase.table("jobs")
+                  .update({"workflow_run_id": int(workflow_run_id)})
+                  .eq("id", job_id)
+                  .execute()
+              )
+              if getattr(update, "error", None):
+                  raise RuntimeError(str(update.error))
+
+          print("SUPABASE JOB CONTRACT = OK")
+          print(f"JOB_ID = {job_id}")
+          print(f"WORKFLOW_RUN_ID = {workflow_run_id}")
+          PY
+
       - name: Static audit
         shell: bash
         run: python scripts/audit_jupiter_imports.py
