@@ -346,6 +346,7 @@ jobs:
           AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
           AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
           AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
+          JUPITER_AICREDITS_OFFLINE_CATALOG: "true"
           PYTHONPATH: ${{ github.workspace }}/jupiter-core
         shell: bash
         run: |
@@ -449,6 +450,7 @@ jobs:
           AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
           AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
           AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
+          JUPITER_AICREDITS_OFFLINE_CATALOG: "true"
 
           PYTHONPATH: ${{ github.workspace }}/jupiter-core
         shell: bash
