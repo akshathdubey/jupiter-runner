@@ -225,7 +225,7 @@ def main() -> None:
                 raise RuntimeError("Production reported success but rendered MP4 is missing.")
 
             update_job(status="running", stage="captioning", progress=95, error=None)
-            caption_result = burn_captions(rendered_file, teacher, captioned_file)
+            caption_result = burn_captions(rendered_file, teacher, captioned_file, visual=visual)
             if not caption_result.get("passed") or not captioned_file.exists() or captioned_file.stat().st_size <= 0:
                 raise RuntimeError("Caption renderer did not produce a valid final MP4.")
             (work / "caption_result.json").write_text(json.dumps(caption_result, indent=2, ensure_ascii=False), encoding="utf-8")
