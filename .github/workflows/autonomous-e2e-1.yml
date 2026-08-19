@@ -1,0 +1,71 @@
+name: Jupiter Autonomous E2E #1
+
+run-name: Jupiter Autonomous E2E #1
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Jupiter deployment to exercise
+        required: false
+        default: https://jupiter.zenithxlabs.com
+        type: string
+      target_minutes:
+        description: Test lesson duration
+        required: false
+        default: "3"
+        type: string
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: jupiter-autonomous-e2e-1
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    name: Clean PDF → analysis → lesson → video
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      JUPITER_E2E_BASE_URL: ${{ inputs.base_url }}
+      JUPITER_E2E_MINUTES: ${{ inputs.target_minutes }}
+      GITHUB_OWNER: akshathdubey
+      GITHUB_REPO: jupiter-runner
+      GITHUB_RENDER_WORKFLOW: render.yml
+      JUPITER_AICREDITS_OFFLINE_CATALOG: "true"
+
+    steps:
+      - name: Checkout runner
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          clean: true
+
+      - name: Install E2E control-plane dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          python -m pip install --upgrade pip
+          python -m pip install "supabase>=2.18,<3" reportlab
+
+      - name: Run autonomous clean E2E #1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        shell: bash
+        run: python -u scripts/autonomous_e2e_1.py
+
+      - name: Upload E2E report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jupiter-autonomous-e2e-1-${{ github.run_id }}
+          path: e2e-report.json
+          if-no-files-found: warn
+          retention-days: 14
