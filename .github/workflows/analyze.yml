@@ -305,6 +305,37 @@ jobs:
           ls -ld jupiter-core
 
       # ==========================================================
+      # SYSTEM DEPENDENCIES FOR MANIM / MANIMPANGO
+      #
+      # The analysis environment may install Manim through Jupiter Core.
+      # manimpango needs the system pangocairo development stack before
+      # pip can build its wheel.
+      # ==========================================================
+
+      - name: Prepare system dependencies for Manim
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MISSING=0
+
+          command -v pkg-config >/dev/null 2>&1 || MISSING=1
+          pkg-config --exists cairo 2>/dev/null || MISSING=1
+          pkg-config --exists pangocairo 2>/dev/null || MISSING=1
+          pkg-config --exists glib-2.0 2>/dev/null || MISSING=1
+
+          if [ "$MISSING" -eq 1 ]; then
+            sudo apt-get clean
+            sudo apt-get               -o Acquire::Retries=2               -o Acquire::http::Timeout=15               -o Acquire::https::Timeout=15               update
+
+            sudo apt-get install -y --no-install-recommends               pkg-config               libcairo2               libcairo2-dev               libpango-1.0-0               libpango1.0-dev               libpangocairo-1.0-0               libglib2.0-0               libglib2.0-dev
+          fi
+
+          echo "cairo      = $(pkg-config --modversion cairo)"
+          echo "pangocairo = $(pkg-config --modversion pangocairo)"
+          echo "glib       = $(pkg-config --modversion glib-2.0)"
+
+      # ==========================================================
       # RUNNER DEPENDENCIES
       # ==========================================================
 
