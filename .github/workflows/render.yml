@@ -10,27 +10,30 @@ on:
         required: true
         type: string
       target_minutes:
-        description: Lesson duration in minutes
+        description: Lesson duration in minutes (used only as manual fallback)
         required: true
         type: string
       quality:
-        description: Jupiter production quality
+        description: Jupiter production quality (used only as manual fallback)
         required: true
         type: choice
         options:
           - normal
           - premium
       tts_voice:
-        description: Edge TTS voice
-        required: true
+        description: Edge TTS voice (database value is authoritative)
+        required: false
+        default: en-US-AriaNeural
         type: string
       tts_rate:
-        description: TTS rate
-        required: true
+        description: TTS rate (database value is authoritative)
+        required: false
+        default: +0%
         type: string
       tts_volume:
-        description: TTS volume
-        required: true
+        description: TTS volume (database value is authoritative)
+        required: false
+        default: +0%
         type: string
 
 permissions:
@@ -136,7 +139,7 @@ jobs:
           path: |
             .jupiter_runtime_venv
             .jupiter_cache
-          key: jupiter-${{ runner.os }}-py311-render-${{ hashFiles('requirements.txt', 'jupiter-core/requirements.txt', 'jupiter-core/pyproject.toml') }}-v3
+          key: jupiter-${{ runner.os }}-py311-render-${{ hashFiles('requirements.txt', 'jupiter-core/requirements.txt', 'jupiter-core/pyproject.toml') }}-v4
 
       - name: Prepare cached Jupiter Python environment
         shell: bash
@@ -172,6 +175,90 @@ jobs:
           test -n "${AICREDITS_API_KEY:-}"
           echo "PRODUCTION ENVIRONMENT = OK"
 
+      - name: Resolve production job contract
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          FALLBACK_TARGET_MINUTES: ${{ inputs.target_minutes }}
+          FALLBACK_QUALITY: ${{ inputs.quality }}
+          FALLBACK_TTS_VOICE: ${{ inputs.tts_voice }}
+          FALLBACK_TTS_RATE: ${{ inputs.tts_rate }}
+          FALLBACK_TTS_VOLUME: ${{ inputs.tts_volume }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from supabase import create_client
+
+          supabase = create_client(
+              os.environ["SUPABASE_URL"],
+              os.environ["SUPABASE_SERVICE_ROLE_KEY"],
+          )
+          job_id = os.environ["JOB_ID"]
+          result = (
+              supabase.table("jobs")
+              .select(
+                  "id,kind,status,payment_status,target_minutes,quality,tts_voice,tts_rate,tts_volume"
+              )
+              .eq("id", job_id)
+              .single()
+              .execute()
+          )
+
+          job = result.data
+          if not job:
+              raise RuntimeError(f"Production job {job_id} was not found.")
+          if job.get("kind") != "video":
+              raise RuntimeError(f"Job {job_id} is not a video generation job.")
+          if job.get("payment_status") not in {"paid", "test"}:
+              raise RuntimeError(
+                  f"Job {job_id} is not paid. payment_status={job.get('payment_status')!r}"
+              )
+
+          target = int(job.get("target_minutes") or os.environ["FALLBACK_TARGET_MINUTES"])
+          quality = str(job.get("quality") or os.environ["FALLBACK_QUALITY"]).strip().lower()
+          if quality == "premium":
+              quality = "elite"
+          if quality not in {"normal", "elite"}:
+              raise RuntimeError(f"Unsupported database quality: {quality!r}")
+
+          tts_voice = str(job.get("tts_voice") or os.environ["FALLBACK_TTS_VOICE"]).strip()
+          tts_rate = str(job.get("tts_rate") or os.environ["FALLBACK_TTS_RATE"]).strip()
+          tts_volume = str(job.get("tts_volume") or os.environ["FALLBACK_TTS_VOLUME"]).strip()
+
+          values = {
+              "TARGET_MINUTES": str(target),
+              "QUALITY": quality,
+              "TTS_VOICE": tts_voice,
+              "TTS_RATE": tts_rate,
+              "TTS_VOLUME": tts_volume,
+              "JUPITER_WORKFLOW_RUN_ID": os.environ.get("GITHUB_RUN_ID", ""),
+          }
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
+              for key, value in values.items():
+                  handle.write(f"{key}={value}\n")
+
+          workflow_run_id = os.environ.get("GITHUB_RUN_ID")
+          if workflow_run_id:
+              update = (
+                  supabase.table("jobs")
+                  .update({"workflow_run_id": int(workflow_run_id)})
+                  .eq("id", job_id)
+                  .execute()
+              )
+              if getattr(update, "error", None):
+                  raise RuntimeError(str(update.error))
+
+          print("PRODUCTION JOB CONTRACT = OK")
+          print(f"JOB_ID = {job_id}")
+          print(f"TARGET_MINUTES = {target}")
+          print(f"QUALITY = {quality}")
+          print(f"TTS_VOICE = {tts_voice}")
+          print(f"WORKFLOW_RUN_ID = {workflow_run_id}")
+          PY
+
       - name: Verify Jupiter production imports and catalog without spending credits
         env:
           AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
@@ -201,11 +288,11 @@ jobs:
         shell: bash
         env:
           JOB_ID: ${{ inputs.job_id }}
-          TARGET_MINUTES: ${{ inputs.target_minutes }}
-          QUALITY: ${{ inputs.quality }}
-          TTS_VOICE: ${{ inputs.tts_voice }}
-          TTS_RATE: ${{ inputs.tts_rate }}
-          TTS_VOLUME: ${{ inputs.tts_volume }}
+          TARGET_MINUTES: ${{ env.TARGET_MINUTES }}
+          QUALITY: ${{ env.QUALITY }}
+          TTS_VOICE: ${{ env.TTS_VOICE }}
+          TTS_RATE: ${{ env.TTS_RATE }}
+          TTS_VOLUME: ${{ env.TTS_VOLUME }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
@@ -220,6 +307,7 @@ jobs:
           echo "JOB_ID=${JOB_ID}"
           echo "TARGET_MINUTES=${TARGET_MINUTES}"
           echo "QUALITY=${QUALITY}"
+          echo "TTS_VOICE=${TTS_VOICE}"
           python -u runner.py
 
       - name: Upload Jupiter debug artifacts
