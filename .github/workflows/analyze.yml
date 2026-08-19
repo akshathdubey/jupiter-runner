@@ -32,7 +32,7 @@ jobs:
   analyze:
     name: Analyze document
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       JUPITER_AICREDITS_OFFLINE_CATALOG: "true"
       JUPITER_ENABLE_TOOL_STRUCTURED_OUTPUT: "false"
@@ -66,17 +66,24 @@ jobs:
           fetch-depth: 1
           clean: true
 
-      - name: Verify canonical core before paid work
+      - name: Verify canonical core before AI work
         shell: bash
         run: |
           set -euo pipefail
           cd jupiter-core
           echo "JUPITER CORE COMMIT=$(git rev-parse HEAD)"
-          grep -q '^import os$' app/intelligence/llm_gateway.py
-          test -f app/visual_engine/spatial.py
+          test -f app/intelligence/llm_gateway.py
+          test -f app/intelligence/production_pipeline.py
+          test -f app/intelligence/caption_burn_in.py
+          test -f app/visual_engine/camera.py
+          test -f app/visual_engine/math_engine.py
+          test -f app/visual_engine/constraints.py
+          test -f app/visual_engine/story_patterns.py
+          test -f app/visual_engine/audio_sync.py
+          test -f app/visual_engine/visual_qa.py
           echo "CORE PREFLIGHT = OK"
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -86,28 +93,64 @@ jobs:
             jupiter-core/requirements.txt
             jupiter-core/pyproject.toml
 
-      - name: Verify system dependencies
+      - name: Verify rendering system dependencies
         shell: bash
         run: |
           set -euo pipefail
-          missing=0
-          command -v pkg-config >/dev/null 2>&1 || missing=1
-          pkg-config --exists cairo >/dev/null 2>&1 || missing=1
-          pkg-config --exists pangocairo >/dev/null 2>&1 || missing=1
-          pkg-config --exists glib-2.0 >/dev/null 2>&1 || missing=1
-          if [ "$missing" -eq 1 ]; then
-            sudo apt-get update -y
-            sudo apt-get install -y --no-install-recommends pkg-config libcairo2-dev libpango1.0-dev libpangocairo-1.0-0 libglib2.0-dev
+          MISSING=0
+          command -v ffmpeg >/dev/null 2>&1 || MISSING=1
+          command -v pkg-config >/dev/null 2>&1 || MISSING=1
+          pkg-config --exists cairo 2>/dev/null || MISSING=1
+          pkg-config --exists pangocairo 2>/dev/null || MISSING=1
+          pkg-config --exists glib-2.0 2>/dev/null || MISSING=1
+          if [ "$MISSING" -eq 0 ]; then
+            echo "SYSTEM DEPENDENCIES = READY"
+          else
+            if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g; s|https://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+            fi
+            sudo apt-get clean
+            sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update
+            sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 install -y --no-install-recommends ffmpeg pkg-config libcairo2 libcairo2-dev libpango-1.0-0 libpango1.0-dev libpangocairo-1.0-0 libglib2.0-0 libglib2.0-dev
           fi
+          ffmpeg -version | head -n 1
           pkg-config --modversion cairo
           pkg-config --modversion pangocairo
           pkg-config --modversion glib-2.0
 
-      - name: Prepare Jupiter runtime
+      - name: Install MiKTeX for analysis-time math preflight
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p uploads jobs
+          if command -v pdflatex >/dev/null 2>&1 && command -v miktex >/dev/null 2>&1; then
+            echo "MiKTeX already available."
+          else
+            sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update
+            sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 install -y --no-install-recommends ca-certificates curl gnupg
+            curl -fsSL https://miktex.org/download/key | sudo gpg --dearmor --yes -o /usr/share/keyrings/miktex.gpg
+            echo "deb [signed-by=/usr/share/keyrings/miktex.gpg] https://miktex.org/download/ubuntu noble universe" | sudo tee /etc/apt/sources.list.d/miktex.list >/dev/null
+            sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update
+            sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 install -y --no-install-recommends miktex
+          fi
+          command -v pdflatex
+          pdflatex --version | head -n 1
+          if command -v miktex >/dev/null 2>&1; then miktex --version | head -n 1; fi
+          if command -v initexmf >/dev/null 2>&1; then sudo initexmf --admin --set-config-value '[MPM]AutoInstall=1' || true; fi
+          echo "MIKTEX = READY"
+
+      - name: Restore Jupiter Python environment cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .jupiter_runtime_venv
+            .jupiter_cache
+          key: jupiter-${{ runner.os }}-py311-analysis-${{ hashFiles('requirements.txt', 'jupiter-core/requirements.txt', 'jupiter-core/pyproject.toml') }}-v4
+
+      - name: Prepare cached Jupiter runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p uploads jobs .jupiter_cache
           VENV_DIR="${GITHUB_WORKSPACE}/.jupiter_runtime_venv"
           if [ ! -x "${VENV_DIR}/bin/python" ]; then
             rm -rf "${VENV_DIR}"
@@ -116,11 +159,14 @@ jobs:
             "${VENV_DIR}/bin/python" -m pip install -r requirements.txt
             "${VENV_DIR}/bin/python" -m pip install -r jupiter-core/requirements.txt
             "${VENV_DIR}/bin/python" -m pip install -e jupiter-core
+          else
+            echo "Using cached Jupiter Python environment."
           fi
           echo "${VENV_DIR}/bin" >> "$GITHUB_PATH"
           echo "VIRTUAL_ENV=${VENV_DIR}" >> "$GITHUB_ENV"
+          python -m manim --version
 
-      - name: Zero-credit import and contract preflight
+      - name: Zero-credit rendering contract preflight
         env:
           PYTHONPATH: ${{ github.workspace }}/jupiter-core
           AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
@@ -130,31 +176,56 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import os, py_compile
+          import os
+          import py_compile
+          from pathlib import Path
+
           files = [
               "analyze_runner.py",
               "jupiter-core/app/intelligence/llm_gateway.py",
               "jupiter-core/app/intelligence/dynamic_token_budget.py",
               "jupiter-core/app/intelligence/classifier.py",
               "jupiter-core/app/intelligence/teacher.py",
+              "jupiter-core/app/intelligence/teacher_reviewer.py",
               "jupiter-core/app/intelligence/visual_designer.py",
               "jupiter-core/app/intelligence/visual_validator.py",
+              "jupiter-core/app/intelligence/visual_reviewer.py",
+              "jupiter-core/app/intelligence/fact_ledger.py",
+              "jupiter-core/app/intelligence/image_asset_manager.py",
               "jupiter-core/app/intelligence/production_pipeline.py",
+              "jupiter-core/app/intelligence/caption_burn_in.py",
           ]
           for path in files:
               py_compile.compile(path, doraise=True)
-          import requests, pydantic, pydantic_settings
+
           import app.visual_engine
-          from app.intelligence.llm_gateway import LLMGateway
+          from app.intelligence.caption_burn_in import build_caption_cues
           from app.intelligence.dynamic_token_budget import ModelCatalog
-          catalog = ModelCatalog(os.environ["AICREDITS_API_KEY"], "https://api.aicredits.in/v1")
-          models = catalog.refresh()
+          from app.intelligence.llm_gateway import LLMGateway
+          from app.visual_engine.math_engine import compile_latex, preflight_math
+
+          status = preflight_math()
+          assert status["available"], status
+          pdf = compile_latex(r"E=mc^2", Path(".jupiter_cache") / "analysis-math-preflight")
+          assert pdf.exists() and pdf.stat().st_size > 0
+
+          sample_teacher = {
+              "units": [
+                  {"duration_seconds": 4, "narration": "A caption preflight confirms the final lower safe area contract."}
+              ]
+          }
+          cues = build_caption_cues(sample_teacher)
+          assert cues and cues[0]["end"] > cues[0]["start"]
+
+          models = ModelCatalog(os.environ["AICREDITS_API_KEY"], "https://api.aicredits.in/v1").refresh()
           assert models
-          print("ZERO-CREDIT PREFLIGHT = OK")
-          print("MODELS =", ", ".join(m.id for m in models))
+          print("ZERO-CREDIT RENDERING CONTRACT = OK")
+          print("MODELS =", ", ".join(model.id for model in models))
+          print("MATH PREFLIGHT = OK")
+          print("CAPTION PREFLIGHT = OK")
           PY
 
-      - name: Verify Supabase job contract and claim workflow run
+      - name: Verify Supabase analysis job contract
         env:
           JOB_ID: ${{ inputs.job_id }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -166,44 +237,22 @@ jobs:
           import os
           from supabase import create_client
 
-          supabase = create_client(
-              os.environ["SUPABASE_URL"],
-              os.environ["SUPABASE_SERVICE_ROLE_KEY"],
-          )
-          job_id = os.environ["JOB_ID"]
-          required = (
-              "id,kind,status,stage,progress,quality,target_minutes,"
-              "document_path,result_path,workflow_run_id"
-          )
-          result = (
-              supabase.table("jobs")
-              .select(required)
-              .eq("id", job_id)
-              .single()
-              .execute()
-          )
-          job = result.data
+          client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"])
+          job = client.table("jobs").select("id,kind,status,target_minutes,quality,document_path,workflow_run_id").eq("id", os.environ["JOB_ID"]).single().execute().data
           if not job:
-              raise RuntimeError(f"Analysis job {job_id} was not found.")
+              raise RuntimeError("Analysis job was not found.")
           if job.get("kind") != "analysis":
-              raise RuntimeError(f"Job {job_id} is not an analysis job.")
+              raise RuntimeError(f"Expected analysis job, got {job.get('kind')!r}.")
           if not job.get("document_path"):
-              raise RuntimeError(f"Analysis job {job_id} has no document_path.")
-
-          workflow_run_id = os.environ.get("GITHUB_RUN_ID")
-          if workflow_run_id:
-              update = (
-                  supabase.table("jobs")
-                  .update({"workflow_run_id": int(workflow_run_id)})
-                  .eq("id", job_id)
-                  .execute()
-              )
-              if getattr(update, "error", None):
-                  raise RuntimeError(str(update.error))
-
-          print("SUPABASE JOB CONTRACT = OK")
-          print(f"JOB_ID = {job_id}")
-          print(f"WORKFLOW_RUN_ID = {workflow_run_id}")
+              raise RuntimeError("Analysis job has no document_path.")
+          target = int(job.get("target_minutes") or os.environ["TARGET_MINUTES_FALLBACK"] if "TARGET_MINUTES_FALLBACK" in os.environ else ${{ inputs.target_minutes }})
+          if target not in {1, 3, 5, 10, 15, 30, 60}:
+              raise RuntimeError(f"Unsupported target_minutes={target}")
+          run_id = os.environ.get("GITHUB_RUN_ID")
+          if run_id:
+              client.table("jobs").update({"workflow_run_id": int(run_id)}).eq("id", os.environ["JOB_ID"]).execute()
+          print("SUPABASE ANALYSIS CONTRACT = OK")
+          print("WORKFLOW_RUN_ID =", run_id)
           PY
 
       - name: Static audit
@@ -235,5 +284,6 @@ jobs:
           path: |
             jobs/${{ inputs.job_id }}/
             uploads/
+            .jupiter_cache/
           if-no-files-found: warn
           retention-days: 7
