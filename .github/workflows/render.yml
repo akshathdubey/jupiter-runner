@@ -1,5 +1,7 @@
 name: Jupiter Render
 
+run-name: Jupiter Render - ${{ inputs.job_id }}
+
 on:
   workflow_dispatch:
     inputs:
@@ -19,7 +21,7 @@ on:
         type: choice
         options:
           - normal
-          - elite
+          - premium
 
       tts_voice:
         description: Edge TTS voice
@@ -48,8 +50,6 @@ jobs:
     name: Render video
     runs-on: ubuntu-24.04
 
-    # A 60-minute lesson can legitimately take substantial time.
-    # Do not let the workflow itself kill a valid long render.
     timeout-minutes: 180
 
     steps:
@@ -112,31 +112,15 @@ jobs:
 
           test -f "./jupiter-core/app/__init__.py"
           test -f "./jupiter-core/app/config.py"
-          test -f "./jupiter-core/app/intelligence/production_pipeline.py"
-          test -f "./jupiter-core/app/intelligence/llm_gateway.py"
-          test -f "./jupiter-core/app/intelligence/duration_controlled_narrator.py"
 
-          echo ""
-          echo "RUNNER ROOT:"
-          pwd
-
-          echo ""
-          echo "PYTHON:"
-          python --version || true
-
-          echo ""
-          echo "CORE ROOT:"
-          ls -la ./jupiter-core/app/intelligence | head -40
+          echo "Repository layout = OK"
 
       # ==========================================================
       # SYSTEM DEPENDENCIES
       #
-      # IMPORTANT:
-      # Do NOT run apt-get update on every render.
-      #
-      # GitHub-hosted Ubuntu images already contain most of the
-      # required rendering stack. Only install packages when
-      # something is actually missing.
+      # Do NOT blindly run apt-get update on every render.
+      # Only install packages when the hosted runner actually
+      # lacks something required by Manim.
       # ==========================================================
 
       - name: Verify system dependencies
@@ -177,24 +161,21 @@ jobs:
 
           if [ "$MISSING" -eq 0 ]; then
             echo ""
-            echo "========================================"
             echo "SYSTEM DEPENDENCIES = READY"
-            echo "========================================"
 
             ffmpeg -version | head -n 1
-            echo "cairo       = $(pkg-config --modversion cairo)"
-            echo "pangocairo  = $(pkg-config --modversion pangocairo)"
-            echo "glib        = $(pkg-config --modversion glib-2.0)"
+
+            echo "cairo      = $(pkg-config --modversion cairo)"
+            echo "pangocairo = $(pkg-config --modversion pangocairo)"
+            echo "glib       = $(pkg-config --modversion glib-2.0)"
 
             exit 0
           fi
 
           echo ""
           echo "Some system dependencies are missing."
-          echo "Preparing Ubuntu package installation..."
+          echo "Installing only the missing rendering stack..."
 
-          # GitHub-hosted runners can occasionally expose an unhealthy
-          # Azure Ubuntu mirror. Replace it with the public Ubuntu mirror.
           if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
             sudo sed -i \
               's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
@@ -235,22 +216,12 @@ jobs:
             libglib2.0-dev
 
           echo ""
-          echo "========================================"
           echo "SYSTEM DEPENDENCIES = INSTALLED"
-          echo "========================================"
 
           ffmpeg -version | head -n 1
-          echo "cairo       = $(pkg-config --modversion cairo)"
-          echo "pangocairo  = $(pkg-config --modversion pangocairo)"
-          echo "glib        = $(pkg-config --modversion glib-2.0)"
 
       # ==========================================================
       # PYTHON
-      #
-      # Keep production on Python 3.11.
-      # This matches the known working Jupiter environment and
-      # avoids silently changing the runtime underneath Pydantic,
-      # Manim, Supabase and the private core.
       # ==========================================================
 
       - name: Setup Python
@@ -311,10 +282,7 @@ jobs:
           PY
 
       # ==========================================================
-      # ENVIRONMENT DIAGNOSTICS
-      #
-      # DO NOT PRINT SECRET VALUES.
-      # Only verify their presence.
+      # PRODUCTION ENVIRONMENT
       # ==========================================================
 
       - name: Verify production environment
@@ -342,7 +310,6 @@ jobs:
 
           test -n "${AICREDITS_API_KEY:-}" || {
             echo "ERROR: AICREDITS_API_KEY is not configured."
-            echo "Add the AICREDITS_API_KEY repository secret."
             exit 1
           }
 
@@ -351,10 +318,7 @@ jobs:
           echo "AICREDITS_API_KEY         = OK"
 
       # ==========================================================
-      # RUNTIME IMPORT CHECK
-      #
-      # This catches configuration/import problems BEFORE a real
-      # render starts.
+      # IMPORT CHECK
       # ==========================================================
 
       - name: Verify Jupiter production imports
@@ -374,10 +338,12 @@ jobs:
 
           python - <<'PY'
           import app
+
           from app.config import settings
           from app.intelligence.production_pipeline import generate_final_video
 
           assert settings.aicredits_api_key
+
           print("JUPITER CORE = OK")
           print("PRODUCTION PIPELINE = OK")
           PY
@@ -385,8 +351,7 @@ jobs:
       # ==========================================================
       # RENDER
       #
-      # The application runner is the production entry point.
-      # Do NOT call render.py.
+      # runner.py is the ONLY production entry point.
       # ==========================================================
 
       - name: Run Jupiter render
@@ -420,16 +385,15 @@ jobs:
           echo "JOB_ID         = ${JOB_ID}"
           echo "TARGET_MINUTES = ${TARGET_MINUTES}"
           echo "QUALITY        = ${QUALITY}"
+          echo "TTS_VOICE      = ${TTS_VOICE}"
+          echo "TTS_RATE       = ${TTS_RATE}"
+          echo "TTS_VOLUME     = ${TTS_VOLUME}"
           echo ""
 
           python -u runner.py
 
       # ==========================================================
-      # ALWAYS COLLECT JUPITER DEBUG STATE
-      #
-      # runner.py preserves diagnostics under .jupiter_debug.
-      # Do not fail the workflow merely because no debug directory
-      # was produced.
+      # DEBUG ARTIFACTS
       # ==========================================================
 
       - name: Upload Jupiter debug artifacts
@@ -444,10 +408,7 @@ jobs:
             .jupiter_jobs/${{ inputs.job_id }}/**
 
       # ==========================================================
-      # UPLOAD FINAL VIDEO AS CI ARTIFACT
-      #
-      # This is only a diagnostic/backup artifact.
-      # The canonical user download remains Supabase.
+      # FINAL VIDEO BACKUP ARTIFACT
       # ==========================================================
 
       - name: Upload rendered video artifact
@@ -462,7 +423,7 @@ jobs:
             .jupiter_jobs/${{ inputs.job_id }}/**/*.mp4
 
       # ==========================================================
-      # FINAL FAILURE SUMMARY
+      # FAILURE SUMMARY
       # ==========================================================
 
       - name: Render failure summary
@@ -483,14 +444,20 @@ jobs:
 
           echo ""
           echo "Debug directories:"
+
           find . \
             -maxdepth 4 \
             -type d \
-            \( -name ".jupiter_debug" -o -name ".jupiter_jobs" \) \
+            \( \
+              -name ".jupiter_debug" \
+              -o \
+              -name ".jupiter_jobs" \
+            \) \
             -print 2>/dev/null || true
 
           echo ""
           echo "MP4 files:"
+
           find . \
             -type f \
             -name "*.mp4" \
