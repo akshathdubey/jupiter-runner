@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import os
@@ -638,8 +638,22 @@ def main() -> None:
         asset_root=asset_root,
     )
 
+    prepared_asset_list = (
+        image_assets.get("image_assets", [])
+        if isinstance(image_assets, dict)
+        else image_assets
+    )
+
     print(
-        f"Prepared image assets = {len(image_assets)}"
+        f"Prepared image assets = {len(prepared_asset_list)}"
+    )
+    print(
+        "Prepared image IDs = "
+        + ", ".join(
+            str(asset.get("id"))
+            for asset in prepared_asset_list
+            if isinstance(asset, dict) and asset.get("id")
+        )
     )
 
     # --------------------------------------------------------
@@ -758,7 +772,7 @@ def main() -> None:
             db_quality,
             fact_ledger=fact_ledger,
             subject=requested_subject,
-            image_assets=(image_assets.get("image_assets", []) if isinstance(image_assets, dict) else image_assets),
+            image_assets=prepared_asset_list,
         )
     )
 
@@ -820,7 +834,7 @@ def main() -> None:
 # the prepared source-image catalog.
     visual_design = rewrite_for_render(
         visual_design,
-        image_assets,
+        prepared_asset_list,
     )
 
     selected_image_ids = [
@@ -831,7 +845,7 @@ def main() -> None:
 
     prepared_by_id = {
         str(asset.get("id")).strip(): asset
-        for asset in image_assets
+        for asset in prepared_asset_list
         if isinstance(asset, dict) and asset.get("id")
     }
 
@@ -880,7 +894,7 @@ def main() -> None:
 
     print(
         f"Selected source images = {len(selected_assets)} / "
-        f"{len(image_assets)}"
+        f"{len(prepared_asset_list)}"
     )
 
     # --------------------------------------------------------
