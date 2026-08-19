@@ -9,12 +9,10 @@ on:
         description: Jupiter production job ID
         required: true
         type: string
-
       target_minutes:
         description: Lesson duration in minutes
         required: true
         type: string
-
       quality:
         description: Jupiter production quality
         required: true
@@ -22,17 +20,14 @@ on:
         options:
           - normal
           - premium
-
       tts_voice:
         description: Edge TTS voice
         required: true
         type: string
-
       tts_rate:
         description: TTS rate
         required: true
         type: string
-
       tts_volume:
         description: TTS volume
         required: true
@@ -49,24 +44,16 @@ jobs:
   render:
     name: Render video
     runs-on: ubuntu-24.04
-
     timeout-minutes: 180
+    env:
+      JUPITER_AICREDITS_OFFLINE_CATALOG: "true"
 
     steps:
-
-      # ==========================================================
-      # CHECKOUT PUBLIC RUNNER
-      # ==========================================================
-
       - name: Checkout public runner
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
           clean: true
-
-      # ==========================================================
-      # PRIVATE JUPITER CORE ACCESS
-      # ==========================================================
 
       - name: Generate private-core access token
         id: core-token
@@ -85,145 +72,53 @@ jobs:
         with:
           repository: akshathdubey/jupiter-core
           token: ${{ steps.core-token.outputs.token }}
-          ref: ${{ vars.JUPITER_CORE_REF || 'main' }}
+          ref: main
           path: jupiter-core
           fetch-depth: 1
           clean: true
 
-      # ==========================================================
-      # WORKSPACE / INPUT DIAGNOSTICS
-      # ==========================================================
+      - name: Verify checked out core revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd jupiter-core
+          echo "JUPITER CORE COMMIT: $(git rev-parse HEAD)"
+          echo "JUPITER CORE SUBJECT: $(git log -1 --pretty=%s)"
+          grep -q '^import os$' app/intelligence/llm_gateway.py
+          echo "CORE REVISION = OK"
 
       - name: Verify Jupiter repository layout
         shell: bash
         run: |
           set -euo pipefail
-
-          echo "========================================"
-          echo "JUPITER RENDER WORKSPACE"
-          echo "========================================"
-
-          echo "JOB_ID         = ${{ inputs.job_id }}"
-          echo "TARGET_MINUTES = ${{ inputs.target_minutes }}"
-          echo "QUALITY        = ${{ inputs.quality }}"
-          echo ""
-
-          test -f "./runner.py"
-          test -d "./jupiter-core"
-
-          test -f "./jupiter-core/app/__init__.py"
-          test -f "./jupiter-core/app/config.py"
-
+          test -f ./runner.py
+          test -d ./jupiter-core
+          test -f ./jupiter-core/app/__init__.py
+          test -f ./jupiter-core/app/config.py
+          test -f ./jupiter-core/app/intelligence/production_pipeline.py
           echo "Repository layout = OK"
-
-      # ==========================================================
-      # SYSTEM DEPENDENCIES
-      #
-      # Do NOT blindly run apt-get update on every render.
-      # Only install packages when the hosted runner actually
-      # lacks something required by Manim.
-      # ==========================================================
 
       - name: Verify system dependencies
         shell: bash
         run: |
           set -euo pipefail
-
-          echo "========================================"
-          echo "CHECKING SYSTEM DEPENDENCIES"
-          echo "========================================"
-
           MISSING=0
-
-          if ! command -v ffmpeg >/dev/null 2>&1; then
-            echo "MISSING: ffmpeg"
-            MISSING=1
-          fi
-
-          if ! command -v pkg-config >/dev/null 2>&1; then
-            echo "MISSING: pkg-config"
-            MISSING=1
-          fi
-
-          if ! pkg-config --exists cairo 2>/dev/null; then
-            echo "MISSING: cairo"
-            MISSING=1
-          fi
-
-          if ! pkg-config --exists pangocairo 2>/dev/null; then
-            echo "MISSING: pangocairo"
-            MISSING=1
-          fi
-
-          if ! pkg-config --exists glib-2.0 2>/dev/null; then
-            echo "MISSING: glib-2.0"
-            MISSING=1
-          fi
-
+          command -v ffmpeg >/dev/null 2>&1 || MISSING=1
+          command -v pkg-config >/dev/null 2>&1 || MISSING=1
+          pkg-config --exists cairo 2>/dev/null || MISSING=1
+          pkg-config --exists pangocairo 2>/dev/null || MISSING=1
+          pkg-config --exists glib-2.0 2>/dev/null || MISSING=1
           if [ "$MISSING" -eq 0 ]; then
-            echo ""
             echo "SYSTEM DEPENDENCIES = READY"
-
-            ffmpeg -version | head -n 1
-
-            echo "cairo      = $(pkg-config --modversion cairo)"
-            echo "pangocairo = $(pkg-config --modversion pangocairo)"
-            echo "glib       = $(pkg-config --modversion glib-2.0)"
-
             exit 0
           fi
-
-          echo ""
-          echo "Some system dependencies are missing."
-          echo "Installing only the missing rendering stack..."
-
           if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
-            sudo sed -i \
-              's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
-              /etc/apt/sources.list.d/ubuntu.sources
-
-            sudo sed -i \
-              's|https://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
-              /etc/apt/sources.list.d/ubuntu.sources
+            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g; s|https://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
           fi
-
-          if [ -f /etc/apt/sources.list ]; then
-            sudo sed -i \
-              's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
-              /etc/apt/sources.list
-
-            sudo sed -i \
-              's|https://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
-              /etc/apt/sources.list
-          fi
-
           sudo apt-get clean
-
-          sudo apt-get \
-            -o Acquire::Retries=2 \
-            -o Acquire::http::Timeout=15 \
-            -o Acquire::https::Timeout=15 \
-            update
-
-          sudo apt-get install -y --no-install-recommends \
-            ffmpeg \
-            pkg-config \
-            libcairo2 \
-            libcairo2-dev \
-            libpango-1.0-0 \
-            libpango1.0-dev \
-            libpangocairo-1.0-0 \
-            libglib2.0-0 \
-            libglib2.0-dev
-
-          echo ""
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update
+          sudo apt-get install -y --no-install-recommends ffmpeg pkg-config libcairo2 libcairo2-dev libpango-1.0-0 libpango1.0-dev libpangocairo-1.0-0 libglib2.0-0 libglib2.0-dev
           echo "SYSTEM DEPENDENCIES = INSTALLED"
-
-          ffmpeg -version | head -n 1
-
-      # ==========================================================
-      # PYTHON
-      # ==========================================================
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -233,138 +128,74 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             jupiter-core/requirements.txt
-
-      - name: Verify Python
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python --version
-          python -c "import sys; print(sys.executable)"
+            jupiter-core/pyproject.toml
 
       - name: Restore Jupiter Python environment cache
-        id: python-venv-cache
         uses: actions/cache@v4
         with:
           path: |
             .jupiter_runtime_venv
             .jupiter_cache
-          key: jupiter-${{ runner.os }}-py311-render-${{ hashFiles('requirements.txt', 'jupiter-core/requirements.txt', 'jupiter-core/pyproject.toml') }}-v2
-
-      # ==========================================================
-      # PYTHON DEPENDENCIES
-      # ==========================================================
+          key: jupiter-${{ runner.os }}-py311-render-${{ hashFiles('requirements.txt', 'jupiter-core/requirements.txt', 'jupiter-core/pyproject.toml') }}-v3
 
       - name: Prepare cached Jupiter Python environment
         shell: bash
         run: |
           set -euo pipefail
-
           VENV_DIR="${GITHUB_WORKSPACE}/.jupiter_runtime_venv"
-
           if [ ! -x "${VENV_DIR}/bin/python" ]; then
             rm -rf "${VENV_DIR}"
             python -m venv "${VENV_DIR}"
             "${VENV_DIR}/bin/python" -m pip install --upgrade pip
-
-            if [ -f requirements.txt ]; then
-              "${VENV_DIR}/bin/python" -m pip install -r requirements.txt
-            fi
-
-            if [ -f jupiter-core/requirements.txt ]; then
-              "${VENV_DIR}/bin/python" -m pip install -r jupiter-core/requirements.txt
-            fi
-
-            "${VENV_DIR}/bin/python" -m pip install \
-              "manim>=0.19,<0.20" \
-              edge-tts
-
+            "${VENV_DIR}/bin/python" -m pip install -r requirements.txt
+            "${VENV_DIR}/bin/python" -m pip install -r jupiter-core/requirements.txt
+            "${VENV_DIR}/bin/python" -m pip install edge-tts
             "${VENV_DIR}/bin/python" -m pip install -e jupiter-core
           else
             echo "Using cached Jupiter Python environment."
           fi
-
           echo "${VENV_DIR}/bin" >> "${GITHUB_PATH}"
           echo "VIRTUAL_ENV=${VENV_DIR}" >> "${GITHUB_ENV}"
-
-          "${VENV_DIR}/bin/python" --version
           "${VENV_DIR}/bin/python" -m manim --version
           "${VENV_DIR}/bin/python" -c "import edge_tts, requests, cv2, numpy, sympy; print('VISUAL ENGINE DEPS = OK')"
 
-      # ==========================================================
-      # PRODUCTION ENVIRONMENT
-      # ==========================================================
-
       - name: Verify production environment
-        shell: bash
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
+        shell: bash
         run: |
           set -euo pipefail
+          test -n "${SUPABASE_URL:-}"
+          test -n "${SUPABASE_SERVICE_ROLE_KEY:-}"
+          test -n "${AICREDITS_API_KEY:-}"
+          echo "PRODUCTION ENVIRONMENT = OK"
 
-          echo "========================================"
-          echo "VERIFYING PRODUCTION ENVIRONMENT"
-          echo "========================================"
-
-          test -n "${SUPABASE_URL:-}" || {
-            echo "ERROR: SUPABASE_URL is not configured."
-            exit 1
-          }
-
-          test -n "${SUPABASE_SERVICE_ROLE_KEY:-}" || {
-            echo "ERROR: SUPABASE_SERVICE_ROLE_KEY is not configured."
-            exit 1
-          }
-
-          test -n "${AICREDITS_API_KEY:-}" || {
-            echo "ERROR: AICREDITS_API_KEY is not configured."
-            exit 1
-          }
-
-          echo "SUPABASE_URL              = OK"
-          echo "SUPABASE_SERVICE_ROLE_KEY = OK"
-          echo "AICREDITS_API_KEY         = OK"
-
-      # ==========================================================
-      # IMPORT CHECK
-      # ==========================================================
-
-      - name: Verify Jupiter production imports
-        shell: bash
+      - name: Verify Jupiter production imports and catalog without spending credits
         env:
           AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
           AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
           AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
           JUPITER_AICREDITS_OFFLINE_CATALOG: "true"
-
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-
+          PYTHONPATH: ${{ github.workspace }}/jupiter-core
+        shell: bash
         run: |
           set -euo pipefail
-
-          export PYTHONPATH="${GITHUB_WORKSPACE}/jupiter-core"
-
           python - <<'PY'
+          import os
           import app
           import app.visual_engine
-
           from app.config import settings
           from app.intelligence.production_pipeline import generate_final_video
-
+          from app.intelligence.dynamic_token_budget import ModelCatalog
           assert settings.aicredits_api_key
-
+          models = ModelCatalog(os.environ["AICREDITS_API_KEY"], "https://api.aicredits.in/v1").refresh()
+          assert models
           print("JUPITER CORE = OK")
           print("PRODUCTION PIPELINE = OK")
+          print("OFFLINE CATALOG = OK")
           PY
-
-      # ==========================================================
-      # RENDER
-      #
-      # runner.py is the ONLY production entry point.
-      # ==========================================================
 
       - name: Run Jupiter render
         shell: bash
@@ -372,42 +203,24 @@ jobs:
           JOB_ID: ${{ inputs.job_id }}
           TARGET_MINUTES: ${{ inputs.target_minutes }}
           QUALITY: ${{ inputs.quality }}
-
           TTS_VOICE: ${{ inputs.tts_voice }}
           TTS_RATE: ${{ inputs.tts_rate }}
           TTS_VOLUME: ${{ inputs.tts_volume }}
-
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-
           AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
           AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
           AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
           JUPITER_AICREDITS_OFFLINE_CATALOG: "true"
-
           PYTHONUNBUFFERED: "1"
           PYTHONPATH: ${{ github.workspace }}/jupiter-core
-
         run: |
           set -euo pipefail
-
-          echo "========================================"
-          echo "       JUPITER PRODUCTION JOB"
-          echo "========================================"
-
-          echo "JOB_ID         = ${JOB_ID}"
-          echo "TARGET_MINUTES = ${TARGET_MINUTES}"
-          echo "QUALITY        = ${QUALITY}"
-          echo "TTS_VOICE      = ${TTS_VOICE}"
-          echo "TTS_RATE       = ${TTS_RATE}"
-          echo "TTS_VOLUME     = ${TTS_VOLUME}"
-          echo ""
-
+          echo "JUPITER PRODUCTION JOB"
+          echo "JOB_ID=${JOB_ID}"
+          echo "TARGET_MINUTES=${TARGET_MINUTES}"
+          echo "QUALITY=${QUALITY}"
           python -u runner.py
-
-      # ==========================================================
-      # DEBUG ARTIFACTS
-      # ==========================================================
 
       - name: Upload Jupiter debug artifacts
         if: always()
@@ -418,60 +231,3 @@ jobs:
           retention-days: 14
           path: |
             .jupiter_debug/${{ inputs.job_id }}/**
-            .jupiter_jobs/${{ inputs.job_id }}/**
-
-      # ==========================================================
-      # FINAL VIDEO BACKUP ARTIFACT
-      # ==========================================================
-
-      - name: Upload rendered video artifact
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: jupiter-render-${{ inputs.job_id }}
-          if-no-files-found: warn
-          retention-days: 7
-          path: |
-            .jupiter_debug/${{ inputs.job_id }}/**/*.mp4
-            .jupiter_jobs/${{ inputs.job_id }}/**/*.mp4
-
-      # ==========================================================
-      # FAILURE SUMMARY
-      # ==========================================================
-
-      - name: Render failure summary
-        if: failure()
-        shell: bash
-        run: |
-          echo "========================================"
-          echo "       JUPITER RENDER FAILED"
-          echo "========================================"
-
-          echo "JOB_ID         = ${{ inputs.job_id }}"
-          echo "TARGET_MINUTES = ${{ inputs.target_minutes }}"
-          echo "QUALITY        = ${{ inputs.quality }}"
-
-          echo ""
-          echo "Workspace:"
-          pwd
-
-          echo ""
-          echo "Debug directories:"
-
-          find . \
-            -maxdepth 4 \
-            -type d \
-            \( \
-              -name ".jupiter_debug" \
-              -o \
-              -name ".jupiter_jobs" \
-            \) \
-            -print 2>/dev/null || true
-
-          echo ""
-          echo "MP4 files:"
-
-          find . \
-            -type f \
-            -name "*.mp4" \
-            -print 2>/dev/null || true
