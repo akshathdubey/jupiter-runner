@@ -91,6 +91,7 @@ jobs:
         with:
           repository: akshathdubey/jupiter-core
           token: ${{ steps.core-token.outputs.token }}
+          ref: ${{ vars.JUPITER_CORE_REF || 'main' }}
           path: jupiter-core
           fetch-depth: 1
           clean: true
@@ -347,6 +348,7 @@ jobs:
           AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
           AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
           JUPITER_AICREDITS_OFFLINE_CATALOG: "true"
+          JUPITER_ENABLE_TOOL_STRUCTURED_OUTPUT: "false"
           PYTHONPATH: ${{ github.workspace }}/jupiter-core
         shell: bash
         run: |
@@ -451,6 +453,7 @@ jobs:
           AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
           AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
           JUPITER_AICREDITS_OFFLINE_CATALOG: "true"
+          JUPITER_ENABLE_TOOL_STRUCTURED_OUTPUT: "false"
 
           PYTHONPATH: ${{ github.workspace }}/jupiter-core
         shell: bash

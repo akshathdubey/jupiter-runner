@@ -155,6 +155,7 @@ from app.intelligence.image_asset_manager import (
     prepare_image_assets,
     rewrite_for_render,
     upload_asset,
+    select_image_candidates,
 )
 
 from app.intelligence.visual_reviewer import (
@@ -647,11 +648,19 @@ def main() -> None:
     print(
         f"Prepared image assets = {len(prepared_asset_list)}"
     )
+    image_candidates = select_image_candidates(
+        prepared_asset_list,
+        max_assets=48,
+        max_per_page=4,
+    )
     print(
-        "Prepared image IDs = "
+        f"Image candidates for visual design = {len(image_candidates)}"
+    )
+    print(
+        "Candidate image IDs = "
         + ", ".join(
             str(asset.get("id"))
-            for asset in prepared_asset_list
+            for asset in image_candidates
             if isinstance(asset, dict) and asset.get("id")
         )
     )
@@ -772,7 +781,7 @@ def main() -> None:
             db_quality,
             fact_ledger=fact_ledger,
             subject=requested_subject,
-            image_assets=prepared_asset_list,
+            image_assets=image_candidates,
         )
     )
 
@@ -834,7 +843,7 @@ def main() -> None:
 # the prepared source-image catalog.
     visual_design = rewrite_for_render(
         visual_design,
-        prepared_asset_list,
+        image_candidates,
     )
 
     selected_image_ids = [
@@ -845,7 +854,7 @@ def main() -> None:
 
     prepared_by_id = {
         str(asset.get("id")).strip(): asset
-        for asset in prepared_asset_list
+        for asset in image_candidates
         if isinstance(asset, dict) and asset.get("id")
     }
 
@@ -894,7 +903,7 @@ def main() -> None:
 
     print(
         f"Selected source images = {len(selected_assets)} / "
-        f"{len(prepared_asset_list)}"
+        f"{len(image_candidates)}"
     )
 
     # --------------------------------------------------------
