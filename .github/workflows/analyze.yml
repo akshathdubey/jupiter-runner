@@ -30,30 +30,17 @@ jobs:
   analyze:
     name: Analyze document
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 90
     env:
       JUPITER_AICREDITS_OFFLINE_CATALOG: "true"
       JUPITER_ENABLE_TOOL_STRUCTURED_OUTPUT: "false"
 
     steps:
-      - name: Runner diagnostics
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "========================================"
-          echo "JUPITER ANALYSIS WORKFLOW STARTED"
-          echo "========================================"
-          echo "JOB_ID=${{ inputs.job_id }}"
-          echo "TARGET_MINUTES=${{ inputs.target_minutes }}"
-          echo "QUALITY=${{ inputs.quality }}"
-          uname -a
-          python --version
-          pwd
-
       - name: Checkout public runner
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          clean: true
 
       - name: Generate private-core access token
         id: core-token
@@ -67,7 +54,7 @@ jobs:
           permission-contents: read
           permission-metadata: read
 
-      - name: Checkout private Jupiter core
+      - name: Checkout canonical Jupiter core
         uses: actions/checkout@v4
         with:
           repository: akshathdubey/jupiter-core
@@ -77,34 +64,15 @@ jobs:
           fetch-depth: 1
           clean: true
 
-      - name: Verify checked out core revision
+      - name: Verify canonical core before paid work
         shell: bash
         run: |
           set -euo pipefail
           cd jupiter-core
-          echo "JUPITER CORE COMMIT: $(git rev-parse HEAD)"
-          echo "JUPITER CORE SUBJECT: $(git log -1 --pretty=%s)"
+          echo "JUPITER CORE COMMIT=$(git rev-parse HEAD)"
           grep -q '^import os$' app/intelligence/llm_gateway.py
-          echo "LLM GATEWAY IMPORT CHECK = OK"
-
-      - name: Verify Jupiter repository layout
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -d ./jupiter-core
-          test -f ./jupiter-core/app/__init__.py
-          test -f ./jupiter-core/app/config.py
-          test -f ./jupiter-core/app/pricing_template.json
-          test -f ./jupiter-core/app/parsers/pdf.py
-          test -f ./jupiter-core/app/intelligence/classifier.py
-          test -f ./jupiter-core/app/intelligence/teacher.py
-          test -f ./jupiter-core/app/intelligence/teacher_reviewer.py
-          test -f ./jupiter-core/app/intelligence/visual_designer.py
-          test -f ./jupiter-core/app/intelligence/visual_reviewer.py
-          test -f ./jupiter-core/app/intelligence/visual_validator.py
-          test -f ./jupiter-core/app/intelligence/pricing.py
-          test -f ./jupiter-core/app/intelligence/llm_gateway.py
-          echo "PRIVATE JUPITER CORE = OK"
+          test -f app/visual_engine/spatial.py
+          echo "CORE PREFLIGHT = OK"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -116,105 +84,74 @@ jobs:
             jupiter-core/requirements.txt
             jupiter-core/pyproject.toml
 
-      - name: Restore Jupiter Python environment cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            .jupiter_runtime_venv
-            .jupiter_cache
-          key: jupiter-${{ runner.os }}-py311-analyze-${{ hashFiles('requirements.txt', 'jupiter-core/requirements.txt', 'jupiter-core/pyproject.toml') }}-v5
+      - name: Verify system dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          command -v pkg-config >/dev/null 2>&1 || missing=1
+          pkg-config --exists cairo || missing=1
+          pkg-config --exists pangocairo || missing=1
+          pkg-config --exists glib-2.0 || missing=1
+          if [ "$missing" -eq 1 ]; then
+            sudo apt-get update -y
+            sudo apt-get install -y --no-install-recommends pkg-config libcairo2-dev libpango1.0-dev libpangocairo-1.0-0 libglib2.0-dev
+          fi
+          pkg-config --modversion cairo
+          pkg-config --modversion pangocairo
+          pkg-config --modversion glib-2.0
 
-      - name: Prepare Jupiter runtime directories
+      - name: Prepare Jupiter runtime
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p uploads jobs
-
-      - name: Prepare system dependencies for Manim
-        shell: bash
-        run: |
-          set -euo pipefail
-          MISSING=0
-          command -v pkg-config >/dev/null 2>&1 || MISSING=1
-          pkg-config --exists cairo 2>/dev/null || MISSING=1
-          pkg-config --exists pangocairo 2>/dev/null || MISSING=1
-          pkg-config --exists glib-2.0 2>/dev/null || MISSING=1
-          if [ "$MISSING" -eq 1 ]; then
-            sudo apt-get clean
-            sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update
-            sudo apt-get install -y --no-install-recommends pkg-config libcairo2 libcairo2-dev libpango-1.0-0 libpango1.0-dev libpangocairo-1.0-0 libglib2.0-0 libglib2.0-dev
-          fi
-          echo "cairo      = $(pkg-config --modversion cairo)"
-          echo "pangocairo = $(pkg-config --modversion pangocairo)"
-          echo "glib       = $(pkg-config --modversion glib-2.0)"
-
-      - name: Prepare cached Jupiter Python environment
-        shell: bash
-        run: |
-          set -euo pipefail
           VENV_DIR="${GITHUB_WORKSPACE}/.jupiter_runtime_venv"
           if [ ! -x "${VENV_DIR}/bin/python" ]; then
             rm -rf "${VENV_DIR}"
             python -m venv "${VENV_DIR}"
             "${VENV_DIR}/bin/python" -m pip install --upgrade pip
             "${VENV_DIR}/bin/python" -m pip install -r requirements.txt
-            if [ -f jupiter-core/requirements.txt ]; then
-              "${VENV_DIR}/bin/python" -m pip install -r jupiter-core/requirements.txt
-            fi
+            "${VENV_DIR}/bin/python" -m pip install -r jupiter-core/requirements.txt
             "${VENV_DIR}/bin/python" -m pip install -e jupiter-core
-          else
-            echo "Using cached Jupiter Python environment."
           fi
-          echo "${VENV_DIR}/bin" >> "${GITHUB_PATH}"
-          echo "VIRTUAL_ENV=${VENV_DIR}" >> "${GITHUB_ENV}"
-          "${VENV_DIR}/bin/python" --version
+          echo "${VENV_DIR}/bin" >> "$GITHUB_PATH"
+          echo "VIRTUAL_ENV=${VENV_DIR}" >> "$GITHUB_ENV"
 
-      - name: Verify critical Python dependencies
+      - name: Zero-credit import and contract preflight
         env:
+          PYTHONPATH: ${{ github.workspace }}/jupiter-core
           AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
           AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
           AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
-          PYTHONPATH: ${{ github.workspace }}/jupiter-core
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -c "import requests; print('REQUESTS = OK')"
-          python -c "import pydantic; print('PYDANTIC = OK')"
-          python -c "import pydantic_settings; print('PYDANTIC SETTINGS = OK')"
-          python -c "from app.api.blueprint import build_lesson_blueprint; print('BLUEPRINT = OK')"
-          python -c "from app.parsers.pdf import parse_pdf; print('PDF PARSER = OK')"
-          python -c "from app.intelligence.classifier import classify_artifact1; print('CLASSIFIER = OK')"
-          python -c "from app.intelligence.estimator import estimate_credits; print('ESTIMATOR = OK')"
-          python -c "from app.intelligence.teacher import create_teaching_plan; print('TEACHER = OK')"
-          python -c "from app.intelligence.teacher_reviewer import review_teaching_plan; print('TEACHER REVIEWER = OK')"
-          python -c "from app.intelligence.visual_designer import create_visual_design; print('VISUAL DESIGNER = OK')"
-          python -c "from app.intelligence.visual_reviewer import review_visual_design; print('VISUAL REVIEWER = OK')"
-          python -c "from app.intelligence.fact_ledger import build_fact_ledger; print('FACT LEDGER = OK')"
-          python -c "from app.intelligence.visual_validator import validate_visual_design; print('VISUAL VALIDATOR = OK')"
-          python -m py_compile analyze_runner.py
-          echo "ALL JUPITER IMPORTS = OK"
-
-      - name: Verify offline model catalog without spending credits
-        env:
-          AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
-          AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
-          AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
-          PYTHONPATH: ${{ github.workspace }}/jupiter-core
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
-          import os
+          import os, py_compile
+          files = [
+              "analyze_runner.py",
+              "jupiter-core/app/intelligence/llm_gateway.py",
+              "jupiter-core/app/intelligence/dynamic_token_budget.py",
+              "jupiter-core/app/intelligence/classifier.py",
+              "jupiter-core/app/intelligence/teacher.py",
+              "jupiter-core/app/intelligence/visual_designer.py",
+              "jupiter-core/app/intelligence/visual_validator.py",
+              "jupiter-core/app/intelligence/production_pipeline.py",
+          ]
+          for path in files:
+              py_compile.compile(path, doraise=True)
+          import requests, pydantic, pydantic_settings
+          import app.visual_engine
+          from app.intelligence.llm_gateway import LLMGateway
           from app.intelligence.dynamic_token_budget import ModelCatalog
-          os.environ["JUPITER_AICREDITS_OFFLINE_CATALOG"] = "true"
-          catalog = ModelCatalog(os.environ["AICREDITS_API_KEY"], "https://api.aicredits.in/v1")
-          models = catalog.refresh()
-          assert models, "offline catalog returned no models"
-          print("OFFLINE CATALOG = OK")
-          print("CONFIGURED MODELS =", ", ".join(m.id for m in models))
+          models = ModelCatalog(os.environ["AICREDITS_API_KEY"], "https://api.aicredits.in/v1").refresh()
+          assert models
+          print("ZERO-CREDIT PREFLIGHT = OK")
+          print("MODELS =", ", ".join(m.id for m in models))
           PY
 
-      - name: Static audit Jupiter Python tree
+      - name: Static audit
         shell: bash
         run: python scripts/audit_jupiter_imports.py
 
@@ -233,15 +170,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/jupiter-core
           PYTHONUNBUFFERED: "1"
         shell: bash
-        run: |
-          set -euo pipefail
-          echo "========================================"
-          echo "RUNNING JUPITER ANALYSIS"
-          echo "========================================"
-          echo "JOB_ID=${JOB_ID}"
-          echo "TARGET_MINUTES=${TARGET_MINUTES}"
-          echo "QUALITY=${QUALITY}"
-          python analyze_runner.py
+        run: python -u analyze_runner.py
 
       - name: Upload analysis diagnostics
         if: always()
@@ -253,4 +182,3 @@ jobs:
             uploads/
           if-no-files-found: warn
           retention-days: 7
-          compression-level: 6
