@@ -85,6 +85,7 @@ jobs:
         with:
           repository: akshathdubey/jupiter-core
           token: ${{ steps.core-token.outputs.token }}
+          ref: ${{ vars.JUPITER_CORE_REF || 'main' }}
           path: jupiter-core
           fetch-depth: 1
           clean: true
