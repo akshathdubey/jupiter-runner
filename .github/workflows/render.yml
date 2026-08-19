@@ -88,6 +88,12 @@ jobs:
           echo "JUPITER CORE COMMIT: $(git rev-parse HEAD)"
           echo "JUPITER CORE SUBJECT: $(git log -1 --pretty=%s)"
           grep -q '^import os$' app/intelligence/llm_gateway.py
+          test -f app/visual_engine/camera.py
+          test -f app/visual_engine/math_engine.py
+          test -f app/visual_engine/constraints.py
+          test -f app/visual_engine/story_patterns.py
+          test -f app/visual_engine/audio_sync.py
+          test -f app/visual_engine/visual_qa.py
           echo "CORE REVISION = OK"
 
       - name: Verify Jupiter repository layout
@@ -123,6 +129,31 @@ jobs:
           sudo apt-get install -y --no-install-recommends ffmpeg pkg-config libcairo2 libcairo2-dev libpango-1.0-0 libpango1.0-dev libpangocairo-1.0-0 libglib2.0-0 libglib2.0-dev
           echo "SYSTEM DEPENDENCIES = INSTALLED"
 
+      - name: Install MiKTeX for mathematical rendering
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v pdflatex >/dev/null 2>&1 && command -v miktex >/dev/null 2>&1; then
+            echo "MiKTeX already available."
+          else
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ca-certificates curl gnupg
+            curl -fsSL https://miktex.org/download/key | sudo gpg --dearmor --yes -o /usr/share/keyrings/miktex.gpg
+            echo "deb [signed-by=/usr/share/keyrings/miktex.gpg] https://miktex.org/download/ubuntu noble universe" | sudo tee /etc/apt/sources.list.d/miktex.list >/dev/null
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends miktex
+          fi
+          if command -v miktexsetup >/dev/null 2>&1; then
+            sudo miktexsetup --shared=yes finish || true
+          fi
+          if command -v initexmf >/dev/null 2>&1; then
+            sudo initexmf --admin --set-config-value '[MPM]AutoInstall=1' || true
+          fi
+          command -v pdflatex
+          pdflatex --version | head -n 1
+          if command -v miktex >/dev/null 2>&1; then miktex --version | head -n 1; fi
+          echo "MIKTEX = READY"
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -139,7 +170,7 @@ jobs:
           path: |
             .jupiter_runtime_venv
             .jupiter_cache
-          key: jupiter-${{ runner.os }}-py311-render-${{ hashFiles('requirements.txt', 'jupiter-core/requirements.txt', 'jupiter-core/pyproject.toml') }}-v6
+          key: jupiter-${{ runner.os }}-py311-render-${{ hashFiles('requirements.txt', 'jupiter-core/requirements.txt', 'jupiter-core/pyproject.toml') }}-v7
 
       - name: Prepare cached Jupiter Python environment
         shell: bash
@@ -161,6 +192,24 @@ jobs:
           echo "VIRTUAL_ENV=${VENV_DIR}" >> "${GITHUB_ENV}"
           "${VENV_DIR}/bin/python" -m manim --version
           "${VENV_DIR}/bin/python" -c "import edge_tts, requests, cv2, numpy, sympy; print('VISUAL ENGINE DEPS = OK')"
+
+      - name: Verify mathematical rendering without spending AI credits
+        shell: bash
+        env:
+          PYTHONPATH: ${{ github.workspace }}/jupiter-core
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from app.visual_engine.math_engine import preflight_math, compile_latex
+          status = preflight_math()
+          assert status["available"], status
+          output = Path(".jupiter_cache/math-preflight")
+          pdf = compile_latex(r"E=mc^2", output)
+          assert pdf.exists() and pdf.stat().st_size > 0
+          print("MATH PREFLIGHT = OK")
+          print(f"MATH PDF = {pdf}")
+          PY
 
       - name: Verify production environment
         env:
@@ -192,65 +241,34 @@ jobs:
           import os
           from supabase import create_client
 
-          supabase = create_client(
-              os.environ["SUPABASE_URL"],
-              os.environ["SUPABASE_SERVICE_ROLE_KEY"],
-          )
+          supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"])
           job_id = os.environ["JOB_ID"]
           result = (
               supabase.table("jobs")
-              .select(
-                  "id,kind,status,payment_status,target_minutes,quality,tts_voice,tts_rate,tts_volume"
-              )
-              .eq("id", job_id)
-              .single()
-              .execute()
+              .select("id,kind,status,payment_status,target_minutes,quality,tts_voice,tts_rate,tts_volume")
+              .eq("id", job_id).single().execute()
           )
-
           job = result.data
           if not job:
               raise RuntimeError(f"Production job {job_id} was not found.")
           if job.get("kind") != "video":
               raise RuntimeError(f"Job {job_id} is not a video generation job.")
           if job.get("payment_status") not in {"paid", "test"}:
-              raise RuntimeError(
-                  f"Job {job_id} is not paid. payment_status={job.get('payment_status')!r}"
-              )
-
+              raise RuntimeError(f"Job {job_id} is not paid. payment_status={job.get('payment_status')!r}")
           target = int(job.get("target_minutes") or os.environ["FALLBACK_TARGET_MINUTES"])
           quality = str(job.get("quality") or os.environ["FALLBACK_QUALITY"]).strip().lower()
-          if quality == "premium":
-              quality = "elite"
-          if quality not in {"normal", "elite"}:
-              raise RuntimeError(f"Unsupported database quality: {quality!r}")
-
+          if quality == "premium": quality = "elite"
+          if quality not in {"normal", "elite"}: raise RuntimeError(f"Unsupported database quality: {quality!r}")
           tts_voice = str(job.get("tts_voice") or os.environ["FALLBACK_TTS_VOICE"]).strip()
           tts_rate = str(job.get("tts_rate") or os.environ["FALLBACK_TTS_RATE"]).strip()
           tts_volume = str(job.get("tts_volume") or os.environ["FALLBACK_TTS_VOLUME"]).strip()
-
-          values = {
-              "TARGET_MINUTES": str(target),
-              "QUALITY": quality,
-              "TTS_VOICE": tts_voice,
-              "TTS_RATE": tts_rate,
-              "TTS_VOLUME": tts_volume,
-              "JUPITER_WORKFLOW_RUN_ID": os.environ.get("GITHUB_RUN_ID", ""),
-          }
+          values = {"TARGET_MINUTES": str(target), "QUALITY": quality, "TTS_VOICE": tts_voice, "TTS_RATE": tts_rate, "TTS_VOLUME": tts_volume, "JUPITER_WORKFLOW_RUN_ID": os.environ.get("GITHUB_RUN_ID", "")}
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
-              for key, value in values.items():
-                  handle.write(f"{key}={value}\n")
-
+              for key, value in values.items(): handle.write(f"{key}={value}\n")
           workflow_run_id = os.environ.get("GITHUB_RUN_ID")
           if workflow_run_id:
-              update = (
-                  supabase.table("jobs")
-                  .update({"workflow_run_id": int(workflow_run_id)})
-                  .eq("id", job_id)
-                  .execute()
-              )
-              if getattr(update, "error", None):
-                  raise RuntimeError(str(update.error))
-
+              update = supabase.table("jobs").update({"workflow_run_id": int(workflow_run_id)}).eq("id", job_id).execute()
+              if getattr(update, "error", None): raise RuntimeError(str(update.error))
           print("PRODUCTION JOB CONTRACT = OK")
           print(f"JOB_ID = {job_id}")
           print(f"TARGET_MINUTES = {target}")
