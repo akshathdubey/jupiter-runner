@@ -94,6 +94,7 @@ jobs:
           test -f app/visual_engine/story_patterns.py
           test -f app/visual_engine/audio_sync.py
           test -f app/visual_engine/visual_qa.py
+          test -f app/intelligence/caption_burn_in.py
           echo "CORE REVISION = OK"
 
       - name: Verify Jupiter repository layout
@@ -105,6 +106,7 @@ jobs:
           test -f ./jupiter-core/app/__init__.py
           test -f ./jupiter-core/app/config.py
           test -f ./jupiter-core/app/intelligence/production_pipeline.py
+          test -f ./jupiter-core/app/intelligence/caption_burn_in.py
           echo "Repository layout = OK"
 
       - name: Verify system dependencies
@@ -126,7 +128,7 @@ jobs:
           fi
           sudo apt-get clean
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update
-          sudo apt-get install -y --no-install-recommends ffmpeg pkg-config libcairo2 libcairo2-dev libpango-1.0-0 libpango1.0-dev libpangocairo-1.0-0 libglib2.0-0 libglib2.0-dev
+          sudo apt-get install -y --no-install-recommends ffmpeg pkg-config libcairo2 libcairo2-dev libpango-1.0-0 libpango1.0-dev libpangocairo-1.0-0 libglib2.0-0 libglib2.0-dev fonts-dejavu-core
           echo "SYSTEM DEPENDENCIES = INSTALLED"
 
       - name: Install MiKTeX for mathematical rendering
@@ -143,12 +145,8 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y --no-install-recommends miktex
           fi
-          if command -v miktexsetup >/dev/null 2>&1; then
-            sudo miktexsetup --shared=yes finish || true
-          fi
-          if command -v initexmf >/dev/null 2>&1; then
-            sudo initexmf --admin --set-config-value '[MPM]AutoInstall=1' || true
-          fi
+          if command -v miktexsetup >/dev/null 2>&1; then sudo miktexsetup --shared=yes finish || true; fi
+          if command -v initexmf >/dev/null 2>&1; then sudo initexmf --admin --set-config-value '[MPM]AutoInstall=1' || true; fi
           command -v pdflatex
           pdflatex --version | head -n 1
           if command -v miktex >/dev/null 2>&1; then miktex --version | head -n 1; fi
@@ -170,7 +168,7 @@ jobs:
           path: |
             .jupiter_runtime_venv
             .jupiter_cache
-          key: jupiter-${{ runner.os }}-py311-render-${{ hashFiles('requirements.txt', 'jupiter-core/requirements.txt', 'jupiter-core/pyproject.toml') }}-v7
+          key: jupiter-${{ runner.os }}-py311-render-${{ hashFiles('requirements.txt', 'jupiter-core/requirements.txt', 'jupiter-core/pyproject.toml') }}-v8
 
       - name: Prepare cached Jupiter Python environment
         shell: bash
@@ -191,7 +189,7 @@ jobs:
           echo "${VENV_DIR}/bin" >> "${GITHUB_PATH}"
           echo "VIRTUAL_ENV=${VENV_DIR}" >> "${GITHUB_ENV}"
           "${VENV_DIR}/bin/python" -m manim --version
-          "${VENV_DIR}/bin/python" -c "import edge_tts, requests, cv2, numpy, sympy; print('VISUAL ENGINE DEPS = OK')"
+          "${VENV_DIR}/bin/python" -c "import edge_tts, requests, cv2, numpy, sympy; from app.intelligence.caption_burn_in import build_caption_cues; print('VISUAL ENGINE DEPS = OK')"
 
       - name: Verify mathematical rendering without spending AI credits
         shell: bash
@@ -240,41 +238,24 @@ jobs:
           python - <<'PY'
           import os
           from supabase import create_client
-
           supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"])
           job_id = os.environ["JOB_ID"]
-          result = (
-              supabase.table("jobs")
-              .select("id,kind,status,payment_status,target_minutes,quality,tts_voice,tts_rate,tts_volume")
-              .eq("id", job_id).single().execute()
-          )
+          result = supabase.table("jobs").select("id,kind,status,payment_status,target_minutes,quality,tts_voice,tts_rate,tts_volume").eq("id", job_id).single().execute()
           job = result.data
-          if not job:
-              raise RuntimeError(f"Production job {job_id} was not found.")
-          if job.get("kind") != "video":
-              raise RuntimeError(f"Job {job_id} is not a video generation job.")
-          if job.get("payment_status") not in {"paid", "test"}:
-              raise RuntimeError(f"Job {job_id} is not paid. payment_status={job.get('payment_status')!r}")
+          if not job: raise RuntimeError(f"Production job {job_id} was not found.")
+          if job.get("kind") != "video": raise RuntimeError(f"Job {job_id} is not a video generation job.")
+          if job.get("payment_status") not in {"paid", "test"}: raise RuntimeError(f"Job {job_id} is not paid. payment_status={job.get('payment_status')!r}")
           target = int(job.get("target_minutes") or os.environ["FALLBACK_TARGET_MINUTES"])
           quality = str(job.get("quality") or os.environ["FALLBACK_QUALITY"]).strip().lower()
           if quality == "premium": quality = "elite"
           if quality not in {"normal", "elite"}: raise RuntimeError(f"Unsupported database quality: {quality!r}")
-          tts_voice = str(job.get("tts_voice") or os.environ["FALLBACK_TTS_VOICE"]).strip()
-          tts_rate = str(job.get("tts_rate") or os.environ["FALLBACK_TTS_RATE"]).strip()
-          tts_volume = str(job.get("tts_volume") or os.environ["FALLBACK_TTS_VOLUME"]).strip()
-          values = {"TARGET_MINUTES": str(target), "QUALITY": quality, "TTS_VOICE": tts_voice, "TTS_RATE": tts_rate, "TTS_VOLUME": tts_volume, "JUPITER_WORKFLOW_RUN_ID": os.environ.get("GITHUB_RUN_ID", "")}
+          values = {"TARGET_MINUTES": str(target), "QUALITY": quality, "TTS_VOICE": str(job.get("tts_voice") or os.environ["FALLBACK_TTS_VOICE"]).strip(), "TTS_RATE": str(job.get("tts_rate") or os.environ["FALLBACK_TTS_RATE"]).strip(), "TTS_VOLUME": str(job.get("tts_volume") or os.environ["FALLBACK_TTS_VOLUME"]).strip(), "JUPITER_WORKFLOW_RUN_ID": os.environ.get("GITHUB_RUN_ID", "")}
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
               for key, value in values.items(): handle.write(f"{key}={value}\n")
-          workflow_run_id = os.environ.get("GITHUB_RUN_ID")
-          if workflow_run_id:
-              update = supabase.table("jobs").update({"workflow_run_id": int(workflow_run_id)}).eq("id", job_id).execute()
+          if os.environ.get("GITHUB_RUN_ID"):
+              update = supabase.table("jobs").update({"workflow_run_id": int(os.environ["GITHUB_RUN_ID"])}).eq("id", job_id).execute()
               if getattr(update, "error", None): raise RuntimeError(str(update.error))
           print("PRODUCTION JOB CONTRACT = OK")
-          print(f"JOB_ID = {job_id}")
-          print(f"TARGET_MINUTES = {target}")
-          print(f"QUALITY = {quality}")
-          print(f"TTS_VOICE = {tts_voice}")
-          print(f"WORKFLOW_RUN_ID = {workflow_run_id}")
           PY
 
       - name: Verify Jupiter production imports and catalog without spending credits
@@ -291,13 +272,14 @@ jobs:
           import os
           import app
           import app.visual_engine
-          from app.config import settings
+          from app.intelligence.caption_burn_in import build_caption_cues
           from app.intelligence.production_pipeline import generate_final_video
           from app.intelligence.dynamic_token_budget import ModelCatalog
-          assert settings.aicredits_api_key
+          assert build_caption_cues({"units": [{"duration_seconds": 3, "narration": "Test caption rendering."}]})
           models = ModelCatalog(os.environ["AICREDITS_API_KEY"], "https://api.aicredits.in/v1").refresh()
           assert models
           print("JUPITER CORE = OK")
+          print("CAPTION ENGINE = OK")
           print("PRODUCTION PIPELINE = OK")
           print("OFFLINE CATALOG = OK")
           PY
@@ -314,14 +296,7 @@ jobs:
           JUPITER_AICREDITS_OFFLINE_CATALOG: "true"
           PYTHONUNBUFFERED: "1"
           PYTHONPATH: ${{ github.workspace }}/jupiter-core
-        run: |
-          set -euo pipefail
-          echo "JUPITER PRODUCTION JOB"
-          echo "JOB_ID=${JOB_ID}"
-          echo "TARGET_MINUTES=${TARGET_MINUTES}"
-          echo "QUALITY=${QUALITY}"
-          echo "TTS_VOICE=${TTS_VOICE}"
-          python -u runner.py
+        run: python -u runner.py
 
       - name: Upload Jupiter debug artifacts
         if: always()
