@@ -7,12 +7,10 @@ on:
         description: Jupiter analysis job ID
         required: true
         type: string
-
       target_minutes:
         description: Lesson duration
         required: true
         type: string
-
       quality:
         description: Internal Jupiter quality
         required: true
@@ -33,42 +31,29 @@ jobs:
     name: Analyze document
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    env:
+      JUPITER_AICREDITS_OFFLINE_CATALOG: "true"
+      JUPITER_ENABLE_TOOL_STRUCTURED_OUTPUT: "false"
 
     steps:
-      # ==========================================================
-      # DIAGNOSTICS
-      # ==========================================================
-
       - name: Runner diagnostics
         shell: bash
         run: |
           set -euo pipefail
-
           echo "========================================"
           echo "JUPITER ANALYSIS WORKFLOW STARTED"
           echo "========================================"
-
           echo "JOB_ID=${{ inputs.job_id }}"
           echo "TARGET_MINUTES=${{ inputs.target_minutes }}"
           echo "QUALITY=${{ inputs.quality }}"
-          echo ""
-
           uname -a
           python --version
           pwd
-
-      # ==========================================================
-      # PUBLIC RUNNER REPOSITORY
-      # ==========================================================
 
       - name: Checkout public runner
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-
-      # ==========================================================
-      # PRIVATE CORE ACCESS TOKEN
-      # ==========================================================
 
       - name: Generate private-core access token
         id: core-token
@@ -82,313 +67,120 @@ jobs:
           permission-contents: read
           permission-metadata: read
 
-      # ==========================================================
-      # PRIVATE CORE
-      # ==========================================================
-
       - name: Checkout private Jupiter core
         uses: actions/checkout@v4
         with:
           repository: akshathdubey/jupiter-core
           token: ${{ steps.core-token.outputs.token }}
-          ref: ${{ vars.JUPITER_CORE_REF || 'main' }}
+          ref: main
           path: jupiter-core
           fetch-depth: 1
           clean: true
 
-      # ==========================================================
-      # VERIFY REPOSITORY LAYOUT
-      # ==========================================================
+      - name: Verify checked out core revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd jupiter-core
+          echo "JUPITER CORE COMMIT: $(git rev-parse HEAD)"
+          echo "JUPITER CORE SUBJECT: $(git log -1 --pretty=%s)"
+          grep -q '^import os$' app/intelligence/llm_gateway.py
+          echo "LLM GATEWAY IMPORT CHECK = OK"
 
       - name: Verify Jupiter repository layout
         shell: bash
         run: |
           set -euo pipefail
-
-          echo "========================================"
-          echo "VERIFYING JUPITER REPOSITORY LAYOUT"
-          echo "========================================"
-
-          test -d "./jupiter-core"
-
-          test -f "./jupiter-core/app/__init__.py"
-          test -f "./jupiter-core/app/config.py"
-          test -f "./jupiter-core/app/pricing_template.json"
-
-          test -f "./jupiter-core/app/parsers/pdf.py"
-
-          test -f "./jupiter-core/app/intelligence/classifier.py"
-          test -f "./jupiter-core/app/intelligence/teacher.py"
-          test -f "./jupiter-core/app/intelligence/teacher_reviewer.py"
-          test -f "./jupiter-core/app/intelligence/visual_designer.py"
-          test -f "./jupiter-core/app/intelligence/visual_reviewer.py"
-          test -f "./jupiter-core/app/intelligence/visual_validator.py"
-          test -f "./jupiter-core/app/intelligence/pricing.py"
-          test -f "./jupiter-core/app/intelligence/llm_gateway.py"
-
+          test -d ./jupiter-core
+          test -f ./jupiter-core/app/__init__.py
+          test -f ./jupiter-core/app/config.py
+          test -f ./jupiter-core/app/pricing_template.json
+          test -f ./jupiter-core/app/parsers/pdf.py
+          test -f ./jupiter-core/app/intelligence/classifier.py
+          test -f ./jupiter-core/app/intelligence/teacher.py
+          test -f ./jupiter-core/app/intelligence/teacher_reviewer.py
+          test -f ./jupiter-core/app/intelligence/visual_designer.py
+          test -f ./jupiter-core/app/intelligence/visual_reviewer.py
+          test -f ./jupiter-core/app/intelligence/visual_validator.py
+          test -f ./jupiter-core/app/intelligence/pricing.py
+          test -f ./jupiter-core/app/intelligence/llm_gateway.py
           echo "PRIVATE JUPITER CORE = OK"
-      # ==========================================================
-      # DATABASE: GITHUB STARTED
-      # ==========================================================
-
-      - name: Mark job as github_started
-        env:
-          JOB_ID: ${{ inputs.job_id }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python - <<'PY'
-          import json
-          import os
-          import urllib.parse
-          import urllib.request
-
-          base_url = (
-              os.environ["SUPABASE_URL"]
-              .strip()
-              .rstrip("/")
-          )
-
-          if base_url.lower().endswith("/rest/v1"):
-              base_url = base_url[:-7].rstrip("/")
-
-          key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
-          job_id = os.environ["JOB_ID"]
-
-          endpoint = (
-              f"{base_url}/rest/v1/jobs"
-              f"?id=eq.{urllib.parse.quote(job_id, safe='')}"
-          )
-
-          payload = json.dumps({
-              "status": "running",
-              "stage": "github_started",
-              "progress": 10,
-              "error": None,
-          }).encode("utf-8")
-
-          request = urllib.request.Request(
-              endpoint,
-              method="PATCH",
-              data=payload,
-              headers={
-                  "apikey": key,
-                  "Authorization": f"Bearer {key}",
-                  "Content-Type": "application/json",
-                  "Prefer": "return=minimal",
-              },
-          )
-
-          with urllib.request.urlopen(
-              request,
-              timeout=30,
-          ) as response:
-              print(
-                  "SUPABASE UPDATE STATUS:",
-                  response.status,
-              )
-          PY
-
-      # ==========================================================
-      # DATABASE: PRIVATE CORE READY
-      # ==========================================================
-
-      - name: Mark private core ready
-        env:
-          JOB_ID: ${{ inputs.job_id }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python - <<'PY'
-          import json
-          import os
-          import urllib.request
-
-          base_url = (
-              os.environ["SUPABASE_URL"]
-              .strip()
-              .rstrip("/")
-          )
-
-          if base_url.lower().endswith("/rest/v1"):
-              base_url = base_url[:-7].rstrip("/")
-
-          key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
-          job_id = os.environ["JOB_ID"]
-
-          endpoint = (
-              f"{base_url}/rest/v1/jobs"
-              f"?id=eq.{job_id}"
-          )
-
-          payload = json.dumps({
-              "stage": "private_core_ready",
-              "progress": 20,
-          }).encode("utf-8")
-
-          request = urllib.request.Request(
-              endpoint,
-              method="PATCH",
-              data=payload,
-              headers={
-                  "apikey": key,
-                  "Authorization": f"Bearer {key}",
-                  "Content-Type": "application/json",
-                  "Prefer": "return=minimal",
-              },
-          )
-
-          with urllib.request.urlopen(
-              request,
-              timeout=30,
-          ) as response:
-              print(
-                  "SUPABASE UPDATE STATUS:",
-                  response.status,
-              )
-          PY
-
-      # ==========================================================
-      # PYTHON
-      # ==========================================================
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            jupiter-core/requirements.txt
+            jupiter-core/pyproject.toml
 
       - name: Restore Jupiter Python environment cache
-        id: python-venv-cache
         uses: actions/cache@v4
         with:
           path: |
             .jupiter_runtime_venv
             .jupiter_cache
-          key: jupiter-${{ runner.os }}-py311-analyze-${{ hashFiles('requirements.txt', 'jupiter-core/requirements.txt', 'jupiter-core/pyproject.toml') }}-v2
-
-      # ==========================================================
-      # RUNTIME DIRECTORIES
-      # ==========================================================
+          key: jupiter-${{ runner.os }}-py311-analyze-${{ hashFiles('requirements.txt', 'jupiter-core/requirements.txt', 'jupiter-core/pyproject.toml') }}-v5
 
       - name: Prepare Jupiter runtime directories
         shell: bash
         run: |
           set -euo pipefail
-
-          mkdir -p uploads
-          mkdir -p jobs
-
-          echo "========================================"
-          echo "RUNTIME DIRECTORIES"
-          echo "========================================"
-
-          echo "Workspace:"
-          pwd
-
-          echo ""
-          echo "Uploads:"
-          ls -ld uploads
-
-          echo ""
-          echo "Jobs:"
-          ls -ld jobs
-
-          echo ""
-          echo "Private core:"
-          ls -ld jupiter-core
-
-      # ==========================================================
-      # SYSTEM DEPENDENCIES FOR MANIM / MANIMPANGO
-      #
-      # The analysis environment may install Manim through Jupiter Core.
-      # manimpango needs the system pangocairo development stack before
-      # pip can build its wheel.
-      # ==========================================================
+          mkdir -p uploads jobs
 
       - name: Prepare system dependencies for Manim
         shell: bash
         run: |
           set -euo pipefail
-
           MISSING=0
-
           command -v pkg-config >/dev/null 2>&1 || MISSING=1
           pkg-config --exists cairo 2>/dev/null || MISSING=1
           pkg-config --exists pangocairo 2>/dev/null || MISSING=1
           pkg-config --exists glib-2.0 2>/dev/null || MISSING=1
-
           if [ "$MISSING" -eq 1 ]; then
             sudo apt-get clean
-            sudo apt-get               -o Acquire::Retries=2               -o Acquire::http::Timeout=15               -o Acquire::https::Timeout=15               update
-
-            sudo apt-get install -y --no-install-recommends               pkg-config               libcairo2               libcairo2-dev               libpango-1.0-0               libpango1.0-dev               libpangocairo-1.0-0               libglib2.0-0               libglib2.0-dev
+            sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update
+            sudo apt-get install -y --no-install-recommends pkg-config libcairo2 libcairo2-dev libpango-1.0-0 libpango1.0-dev libpangocairo-1.0-0 libglib2.0-0 libglib2.0-dev
           fi
-
           echo "cairo      = $(pkg-config --modversion cairo)"
           echo "pangocairo = $(pkg-config --modversion pangocairo)"
           echo "glib       = $(pkg-config --modversion glib-2.0)"
-
-      # ==========================================================
-      # RUNNER DEPENDENCIES
-      # ==========================================================
 
       - name: Prepare cached Jupiter Python environment
         shell: bash
         run: |
           set -euo pipefail
-
           VENV_DIR="${GITHUB_WORKSPACE}/.jupiter_runtime_venv"
-
           if [ ! -x "${VENV_DIR}/bin/python" ]; then
             rm -rf "${VENV_DIR}"
             python -m venv "${VENV_DIR}"
             "${VENV_DIR}/bin/python" -m pip install --upgrade pip
-
             "${VENV_DIR}/bin/python" -m pip install -r requirements.txt
-
             if [ -f jupiter-core/requirements.txt ]; then
               "${VENV_DIR}/bin/python" -m pip install -r jupiter-core/requirements.txt
             fi
-
-            "${VENV_DIR}/bin/python" -m pip install requests
             "${VENV_DIR}/bin/python" -m pip install -e jupiter-core
           else
             echo "Using cached Jupiter Python environment."
           fi
-
           echo "${VENV_DIR}/bin" >> "${GITHUB_PATH}"
           echo "VIRTUAL_ENV=${VENV_DIR}" >> "${GITHUB_ENV}"
-
           "${VENV_DIR}/bin/python" --version
-          "${VENV_DIR}/bin/python" -c "import requests; print('REQUESTS = OK')"
-
-      # ==========================================================
-      # CRITICAL IMPORT TESTS
-      # ==========================================================
 
       - name: Verify critical Python dependencies
         env:
           AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
           AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
           AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
-          JUPITER_AICREDITS_OFFLINE_CATALOG: "true"
-          JUPITER_ENABLE_TOOL_STRUCTURED_OUTPUT: "false"
           PYTHONPATH: ${{ github.workspace }}/jupiter-core
         shell: bash
         run: |
           set -euo pipefail
-
           python -c "import requests; print('REQUESTS = OK')"
           python -c "import pydantic; print('PYDANTIC = OK')"
           python -c "import pydantic_settings; print('PYDANTIC SETTINGS = OK')"
-
           python -c "from app.api.blueprint import build_lesson_blueprint; print('BLUEPRINT = OK')"
           python -c "from app.parsers.pdf import parse_pdf; print('PDF PARSER = OK')"
           python -c "from app.intelligence.classifier import classify_artifact1; print('CLASSIFIER = OK')"
@@ -399,133 +191,57 @@ jobs:
           python -c "from app.intelligence.visual_reviewer import review_visual_design; print('VISUAL REVIEWER = OK')"
           python -c "from app.intelligence.fact_ledger import build_fact_ledger; print('FACT LEDGER = OK')"
           python -c "from app.intelligence.visual_validator import validate_visual_design; print('VISUAL VALIDATOR = OK')"
-
           python -m py_compile analyze_runner.py
-
-          echo ""
           echo "ALL JUPITER IMPORTS = OK"
 
-      # ==========================================================
-      # DATABASE: RUNNER READY
-      # ==========================================================
-
-      - name: Mark runner ready
+      - name: Verify offline model catalog without spending credits
         env:
-          JOB_ID: ${{ inputs.job_id }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
+          AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
+          AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
+          PYTHONPATH: ${{ github.workspace }}/jupiter-core
         shell: bash
         run: |
           set -euo pipefail
-
           python - <<'PY'
-          import json
           import os
-          import urllib.request
-
-          base_url = (
-              os.environ["SUPABASE_URL"]
-              .strip()
-              .rstrip("/")
-          )
-
-          if base_url.lower().endswith("/rest/v1"):
-              base_url = base_url[:-7].rstrip("/")
-
-          key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
-          job_id = os.environ["JOB_ID"]
-
-          endpoint = (
-              f"{base_url}/rest/v1/jobs"
-              f"?id=eq.{job_id}"
-          )
-
-          payload = json.dumps({
-              "stage": "runner_ready",
-              "progress": 25,
-          }).encode("utf-8")
-
-          request = urllib.request.Request(
-              endpoint,
-              method="PATCH",
-              data=payload,
-              headers={
-                  "apikey": key,
-                  "Authorization": f"Bearer {key}",
-                  "Content-Type": "application/json",
-                  "Prefer": "return=minimal",
-              },
-          )
-
-          with urllib.request.urlopen(
-              request,
-              timeout=30,
-          ) as response:
-              print(
-                  "SUPABASE UPDATE STATUS:",
-                  response.status,
-              )
+          from app.intelligence.dynamic_token_budget import ModelCatalog
+          os.environ["JUPITER_AICREDITS_OFFLINE_CATALOG"] = "true"
+          catalog = ModelCatalog(os.environ["AICREDITS_API_KEY"], "https://api.aicredits.in/v1")
+          models = catalog.refresh()
+          assert models, "offline catalog returned no models"
+          print("OFFLINE CATALOG = OK")
+          print("CONFIGURED MODELS =", ", ".join(m.id for m in models))
           PY
-
-      # ==========================================================
-      # ANALYSIS
-      # ==========================================================
 
       - name: Static audit Jupiter Python tree
         shell: bash
-        run: |
-          set -euo pipefail
-          python scripts/audit_jupiter_imports.py
+        run: python scripts/audit_jupiter_imports.py
 
       - name: Run Jupiter analysis
         env:
           JOB_ID: ${{ inputs.job_id }}
           TARGET_MINUTES: ${{ inputs.target_minutes }}
           QUALITY: ${{ inputs.quality }}
-
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-
           AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
           AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
           AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
           JUPITER_AICREDITS_OFFLINE_CATALOG: "true"
           JUPITER_ENABLE_TOOL_STRUCTURED_OUTPUT: "false"
-
           PYTHONPATH: ${{ github.workspace }}/jupiter-core
+          PYTHONUNBUFFERED: "1"
         shell: bash
         run: |
           set -euo pipefail
-
           echo "========================================"
           echo "RUNNING JUPITER ANALYSIS"
           echo "========================================"
-
           echo "JOB_ID=${JOB_ID}"
           echo "TARGET_MINUTES=${TARGET_MINUTES}"
           echo "QUALITY=${QUALITY}"
-
-          echo ""
-          echo "Core:"
-          test -d "./jupiter-core"
-          test -f "./jupiter-core/app/__init__.py"
-
-          echo "Core checkout verified."
-
-          echo ""
-          echo "Runtime:"
-          test -d "./uploads"
-          test -d "./jobs"
-
-          echo "Runtime directories verified."
-
-          echo ""
           python analyze_runner.py
-
-
-      # ==========================================================
-      # ALWAYS PRESERVE CLOUD-ANALYSIS DIAGNOSTICS
-      # ==========================================================
 
       - name: Upload analysis diagnostics
         if: always()
