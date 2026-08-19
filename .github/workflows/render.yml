@@ -288,11 +288,6 @@ jobs:
         shell: bash
         env:
           JOB_ID: ${{ inputs.job_id }}
-          TARGET_MINUTES: ${{ env.TARGET_MINUTES }}
-          QUALITY: ${{ env.QUALITY }}
-          TTS_VOICE: ${{ env.TTS_VOICE }}
-          TTS_RATE: ${{ env.TTS_RATE }}
-          TTS_VOLUME: ${{ env.TTS_VOLUME }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
