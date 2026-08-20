@@ -1,0 +1,45 @@
+name: Jupiter Publish
+
+run-name: Jupiter Publish - ${{ inputs.publication_job_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      publication_job_id:
+        description: Jupiter publication job ID
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jupiter-publish-${{ inputs.publication_job_id }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish Short
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout runner
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          clean: true
+      - name: Install publisher dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install "supabase>=2.18,<3" "requests>=2.31,<3" "cryptography>=42,<47"
+      - name: Run publisher
+        env:
+          PUBLICATION_JOB_ID: ${{ inputs.publication_job_id }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          JUPITER_TOKEN_ENCRYPTION_KEY: ${{ secrets.JUPITER_TOKEN_ENCRYPTION_KEY }}
+          META_GRAPH_VERSION: ${{ vars.META_GRAPH_VERSION }}
+        shell: bash
+        run: python -u scripts/publisher.py
