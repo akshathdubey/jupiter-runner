@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import tempfile
 from datetime import datetime, timezone
@@ -77,7 +76,12 @@ def dispatch_publication(publication_job_id: str):
     if not token:
         raise RuntimeError("GITHUB_ACTIONS_TOKEN is required to start publishing.")
     workflow = os.environ.get("GITHUB_PUBLISH_WORKFLOW", "publish.yml")
-    response = requests.post(f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/{workflow}/dispatches", headers={"Accept": "application/vnd.github+json", "Authorization": f"Bearer {token}", "X-GitHub-Api-Version": "2026-03-10", "Content-Type": "application/json"}, json={"ref": "main", "inputs": {"publication_job_id": publication_job_id}}, timeout=30)
+    response = requests.post(
+        f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/{workflow}/dispatches",
+        headers={"Accept": "application/vnd.github+json", "Authorization": f"Bearer {token}", "X-GitHub-Api-Version": "2026-03-10", "Content-Type": "application/json"},
+        json={"ref": "main", "inputs": {"publication_job_id": publication_job_id}},
+        timeout=30,
+    )
     if response.status_code not in (201, 204):
         raise RuntimeError(f"Publisher dispatch failed: {response.status_code} {response.text}")
 
@@ -116,7 +120,8 @@ def main():
         seo_row = supabase.table("seo_metadata").insert({"user_id": job["user_id"], "content_job_id": JOB_ID, **seo}).select("id").single().execute().data
         update_job(stage="rendering", progress=45, seo_metadata_id=seo_row["id"] if seo_row else None)
 
-        rendered = work / "rendered.mp4"; final = work / "final.mp4"
+        rendered = work / "rendered.mp4"
+        final = work / "final.mp4"
         result = generate_final_video(teacher, visual, rendered, quality=QUALITY, tts_voice=str(job.get("narrator") or "en-IN-NeerjaNeural"), tts_rate="+0%", tts_volume="+0%", max_repair_cycles=2, render_timeout_seconds=1200)
         if not result.get("passed"):
             raise RuntimeError(result.get("message", "Short render failed"))
@@ -124,17 +129,24 @@ def main():
         burn_captions(rendered, teacher, final)
         remote = f"jobs/{JOB_ID}/final.mp4"
         response = supabase.storage.from_(BUCKET).upload(remote, final.read_bytes(), {"content-type": "video/mp4", "cache-control": "no-store", "upsert": "true"})
-        if getattr(response, "error", None): raise RuntimeError(f"Final video upload failed: {response.error}")
+        if getattr(response, "error", None):
+            raise RuntimeError(f"Final video upload failed: {response.error}")
 
-        publication_rows = []
+        publication_ids: list[str] = []
         for platform in job.get("platforms") or []:
             connection = supabase.table("social_connections").select("id").eq("user_id", job["user_id"]).eq("platform", platform).eq("status", "active").limit(1).maybe_single().execute().data
-            if not connection: raise RuntimeError(f"Active {platform} connection disappeared before publishing.")
+            if not connection:
+                raise RuntimeError(f"Active {platform} connection disappeared before publishing.")
+            existing = supabase.table("publication_jobs").select("id,status").eq("content_job_id", JOB_ID).eq("social_connection_id", connection["id"]).maybe_single().execute().data
+            if existing:
+                publication_ids.append(str(existing["id"]))
+                continue
             created = supabase.table("publication_jobs").insert({"user_id": job["user_id"], "content_job_id": JOB_ID, "social_connection_id": connection["id"], "platform": platform, "status": "queued", "payload": {}}).select("id").single().execute().data
-            if created: publication_rows.append(created["id"])
+            if created:
+                publication_ids.append(str(created["id"]))
 
-        update_job(status="publishing", stage="publishing", progress=98, output_path=remote, completed_at=NOW(), error=None)
-        for publication_id in publication_rows:
+        update_job(status="publishing", stage="publishing", progress=98, output_path=remote, completed_at=None, error=None)
+        for publication_id in publication_ids:
             dispatch_publication(publication_id)
         update_job(status="completed", stage="published_or_queued", progress=100, output_path=remote, completed_at=NOW(), error=None)
         print("JUPITER SHORT = SUCCESS")
