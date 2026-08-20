@@ -1,9 +1,9 @@
 name: Jupiter Runtime
 
 description: >-
-  Reusable GitHub-native runtime bootstrap for Jupiter jobs. Uses GitHub Actions
-  cache for the Python environment and package stores; system packages are
-  installed from Ubuntu repositories. No Docker is required.
+  Reusable GitHub-native runtime bootstrap for Jupiter jobs. Caches the Jupiter
+  Python environment and package stores; installs system dependencies only when
+  they are missing. No Docker is required.
 
 inputs:
   python-version:
@@ -38,12 +38,22 @@ runs:
           .jupiter_runtime_venv
           ~/.cache/pip
           ~/.cache/miktex
-        key: jupiter-runtime-${{ runner.os }}-${{ inputs.python-version }}-${{ hashFiles('requirements.txt', 'jupiter-core/requirements.txt', 'jupiter-core/pyproject.toml') }}-v2
+        key: jupiter-runtime-${{ runner.os }}-${{ inputs.python-version }}-${{ hashFiles('requirements.txt', 'jupiter-core/requirements.txt', 'jupiter-core/pyproject.toml') }}-v3
 
-    - name: Install Jupiter system runtime
+    - name: Install Jupiter system runtime when missing
       shell: bash
       run: |
         set -euo pipefail
+        MISSING=0
+        command -v ffmpeg >/dev/null 2>&1 || MISSING=1
+        command -v pkg-config >/dev/null 2>&1 || MISSING=1
+        pkg-config --exists cairo 2>/dev/null || MISSING=1
+        pkg-config --exists pangocairo 2>/dev/null || MISSING=1
+        pkg-config --exists glib-2.0 2>/dev/null || MISSING=1
+        if [ "$MISSING" -eq 0 ]; then
+          echo "Jupiter system runtime already available."
+          exit 0
+        fi
         if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
           sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g; s|https://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
         fi
@@ -59,6 +69,11 @@ runs:
       run: |
         set -euo pipefail
         if ! command -v miktex >/dev/null 2>&1 || ! command -v pdflatex >/dev/null 2>&1; then
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g; s|https://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+          fi
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y --no-install-recommends ca-certificates curl gnupg
           curl -fsSL https://miktex.org/download/key | sudo gpg --dearmor --yes -o /usr/share/keyrings/miktex.gpg
           echo "deb [signed-by=/usr/share/keyrings/miktex.gpg] https://miktex.org/download/ubuntu noble universe" | sudo tee /etc/apt/sources.list.d/miktex.list >/dev/null
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update
@@ -85,14 +100,14 @@ runs:
           "${VENV_DIR}/bin/python" -m pip install -r requirements.txt
           "${VENV_DIR}/bin/python" -m pip install -r jupiter-core/requirements.txt
           "${VENV_DIR}/bin/python" -m pip install -e jupiter-core
-          if [ "${{ inputs.install-edge-tts }}" = "true" ]; then
-            "${VENV_DIR}/bin/python" -m pip install edge-tts
-          fi
-          if [ -n "${{ inputs.extra-python-packages }}" ]; then
-            "${VENV_DIR}/bin/python" -m pip install ${{ inputs.extra-python-packages }}
-          fi
         else
           echo "Using cached Jupiter Python runtime."
+        fi
+        if [ "${{ inputs.install-edge-tts }}" = "true" ]; then
+          "${VENV_DIR}/bin/python" -c "import edge_tts" 2>/dev/null || "${VENV_DIR}/bin/python" -m pip install edge-tts
+        fi
+        if [ -n "${{ inputs.extra-python-packages }}" ]; then
+          "${VENV_DIR}/bin/python" -m pip install ${{ inputs.extra-python-packages }}
         fi
         echo "${VENV_DIR}/bin" >> "$GITHUB_PATH"
         echo "VIRTUAL_ENV=${VENV_DIR}" >> "$GITHUB_ENV"
