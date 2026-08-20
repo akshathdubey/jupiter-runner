@@ -1,5 +1,4 @@
 name: "Jupiter Autonomous E2E #1"
-
 run-name: "Jupiter Autonomous E2E #1"
 
 on:
@@ -8,9 +7,13 @@ on:
       - ".github/workflows/autonomous-e2e-1.yml"
       - ".github/workflows/analyze.yml"
       - ".github/workflows/render.yml"
+      - ".github/workflows/shorts.yml"
+      - ".github/workflows/publish.yml"
       - "scripts/autonomous_e2e_1.py"
       - "scripts/install_math.sh"
       - "scripts/audit_jupiter_imports.py"
+      - "scripts/shorts_runner.py"
+      - "scripts/publisher.py"
       - "runner.py"
       - "analyze_runner.py"
   workflow_dispatch:
@@ -40,11 +43,13 @@ env:
   GITHUB_OWNER: akshathdubey
   GITHUB_REPO: jupiter-runner
   GITHUB_RENDER_WORKFLOW: render.yml
+  GITHUB_SHORTS_WORKFLOW: shorts.yml
+  GITHUB_PUBLISH_WORKFLOW: publish.yml
   JUPITER_AICREDITS_OFFLINE_CATALOG: "true"
 
 jobs:
   e2e:
-    name: Clean PDF → analysis → lesson → video
+    name: Clean source → Short → video → publication contract
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
@@ -53,7 +58,6 @@ jobs:
         with:
           fetch-depth: 1
           clean: true
-
       - name: Install E2E control-plane dependencies
         shell: bash
         run: |
@@ -65,15 +69,13 @@ jobs:
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 install -y --no-install-recommends ffmpeg
           python -m pip install --upgrade pip
-          python -m pip install "supabase>=2.18,<3" reportlab
-
+          python -m pip install "supabase>=2.18,<3" reportlab requests cryptography
       - name: Static source audit before E2E
         shell: bash
         run: |
           set -euo pipefail
-          python -m py_compile analyze_runner.py runner.py scripts/autonomous_e2e_1.py scripts/audit_jupiter_imports.py
+          python -m py_compile analyze_runner.py runner.py scripts/autonomous_e2e_1.py scripts/audit_jupiter_imports.py scripts/shorts_runner.py scripts/publisher.py
           python scripts/audit_jupiter_imports.py
-
       - name: Run autonomous clean E2E #1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -81,7 +83,6 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         shell: bash
         run: python -u scripts/autonomous_e2e_1.py
-
       - name: Upload E2E report
         if: always()
         uses: actions/upload-artifact@v4
