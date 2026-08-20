@@ -2,8 +2,8 @@ name: Jupiter Runtime
 
 description: >-
   Reusable GitHub-native runtime bootstrap for Jupiter jobs. Uses GitHub Actions
-  cache for Python wheels, MiKTeX packages, and runtime state; system packages
-  are installed from Ubuntu's repositories. No Docker is required.
+  cache for the Python environment and package stores; system packages are
+  installed from Ubuntu repositories. No Docker is required.
 
 inputs:
   python-version:
@@ -31,14 +31,14 @@ runs:
       with:
         python-version: ${{ inputs.python-version }}
 
-    - name: Restore Jupiter package caches
+    - name: Restore Jupiter runtime cache
       uses: actions/cache@v4
       with:
         path: |
+          .jupiter_runtime_venv
           ~/.cache/pip
           ~/.cache/miktex
-          /tmp/jupiter-apt-cache
-        key: jupiter-runtime-${{ runner.os }}-${{ inputs.python-version }}-${{ hashFiles('requirements.txt', 'jupiter-core/requirements.txt', 'jupiter-core/pyproject.toml') }}-v1
+        key: jupiter-runtime-${{ runner.os }}-${{ inputs.python-version }}-${{ hashFiles('requirements.txt', 'jupiter-core/requirements.txt', 'jupiter-core/pyproject.toml') }}-v2
 
     - name: Install Jupiter system runtime
       shell: bash
@@ -85,7 +85,7 @@ runs:
           "${VENV_DIR}/bin/python" -m pip install -r requirements.txt
           "${VENV_DIR}/bin/python" -m pip install -r jupiter-core/requirements.txt
           "${VENV_DIR}/bin/python" -m pip install -e jupiter-core
-          if [ -n "${{ inputs.install-edge-tts }}" ] && [ "${{ inputs.install-edge-tts }}" = "true" ]; then
+          if [ "${{ inputs.install-edge-tts }}" = "true" ]; then
             "${VENV_DIR}/bin/python" -m pip install edge-tts
           fi
           if [ -n "${{ inputs.extra-python-packages }}" ]; then
