@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
+import requests
 from supabase import create_client
 
 JOB_ID = os.environ["CONTENT_JOB_ID"]
@@ -13,8 +14,11 @@ SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 BUCKET = "jupiter-temp"
 QUALITY = os.environ.get("QUALITY", "normal").strip().lower()
+GITHUB_OWNER = os.environ.get("GITHUB_OWNER", "akshathdubey")
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "jupiter-runner")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+NOW = lambda: datetime.now(timezone.utc).isoformat()
 
 
 def update_job(**values):
@@ -45,11 +49,8 @@ def build_source_context(assets: list[dict], work: Path) -> str:
         download(path, local)
         mime = str(asset.get("mime_type") or "")
         if mime.startswith("text/") or mime == "text/csv":
-            try:
-                text = local.read_text(encoding="utf-8", errors="ignore")
-                chunks.append(f"ASSET {index}: {name}\n{text[:10000]}")
-            except Exception:
-                chunks.append(f"ASSET {index}: {name} (text asset could not be decoded)")
+            text = local.read_text(encoding="utf-8", errors="ignore")
+            chunks.append(f"ASSET {index}: {name}\n{text[:10000]}")
         elif mime == "application/pdf":
             try:
                 import fitz
@@ -71,9 +72,19 @@ def build_artifact(prompt: str, source_context: str) -> dict:
     return {"document": {"title": prompt[:100]}, "content_blocks": blocks, "tables": [], "images": [], "equations": [], "concepts": [{"name": "Requested topic", "description": prompt, "importance": "core", "source_evidence": ["prompt_1"]}]}
 
 
+def dispatch_publication(publication_job_id: str):
+    token = os.environ.get("GITHUB_ACTIONS_TOKEN")
+    if not token:
+        raise RuntimeError("GITHUB_ACTIONS_TOKEN is required to start publishing.")
+    workflow = os.environ.get("GITHUB_PUBLISH_WORKFLOW", "publish.yml")
+    response = requests.post(f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/{workflow}/dispatches", headers={"Accept": "application/vnd.github+json", "Authorization": f"Bearer {token}", "X-GitHub-Api-Version": "2026-03-10", "Content-Type": "application/json"}, json={"ref": "main", "inputs": {"publication_job_id": publication_job_id}}, timeout=30)
+    if response.status_code not in (201, 204):
+        raise RuntimeError(f"Publisher dispatch failed: {response.status_code} {response.text}")
+
+
 def main():
     job = get_job()
-    update_job(status="running", stage="ingesting_assets", progress=5, started_at="now()", error=None)
+    update_job(status="running", stage="ingesting_assets", progress=5, started_at=NOW(), error=None)
     with tempfile.TemporaryDirectory(prefix=f"jupiter-short-{JOB_ID}-") as temp_dir:
         work = Path(temp_dir)
         assets = supabase.table("source_assets").select("*").eq("source_id", job.get("source_id")).order("created_at").execute().data or []
@@ -91,34 +102,21 @@ def main():
         from app.intelligence.caption_burn_in import burn_captions
 
         update_job(stage="planning", progress=15)
-        target_seconds = int(job.get("target_seconds") or 45)
+        target_seconds = 60
         package = build_short_package(prompt=str(job["prompt"]), source_context=source_context, target_seconds=target_seconds, tone=str(job.get("tone") or "infotainment"), quality=QUALITY)
         teacher = {"learning_objective": package.get("hook") or package.get("title", ""), "audience_assumptions": [package.get("audience", "general audience")], "units": package.get("units", [])}
         fact_ledger = build_fact_ledger(artifact)
 
         update_job(stage="storyboarding", progress=28)
-        visual = create_visual_design(teacher, target_minutes=max(1, round(target_seconds / 60)), quality=QUALITY, fact_ledger=fact_ledger, subject="infotainment", image_assets=[])
+        visual = create_visual_design(teacher, target_minutes=1, quality=QUALITY, fact_ledger=fact_ledger, subject="infotainment", image_assets=[])
         visual["visual_system"] = dict(visual.get("visual_system") or {})
         visual["visual_system"]["aspect_ratio"] = "9:16"
-
-        seo = {
-            "primary_keyword": package.get("primary_keyword"),
-            "secondary_keywords": package.get("secondary_keywords", []),
-            "long_tail_keywords": package.get("long_tail_keywords", []),
-            "title_options": package.get("titles", []),
-            "selected_title": package.get("title"),
-            "description": package.get("description"),
-            "caption": package.get("caption"),
-            "hashtags": package.get("hashtags", []),
-            "platform_metadata": {"youtube": {"title": package.get("title"), "description": package.get("description")}, "instagram": {"caption": package.get("caption")}, "facebook": {"description": package.get("description")}},
-        }
+        seo = {"primary_keyword": package.get("primary_keyword"), "secondary_keywords": package.get("secondary_keywords", []), "long_tail_keywords": package.get("long_tail_keywords", []), "title_options": package.get("titles", []), "selected_title": package.get("title"), "description": package.get("description"), "caption": package.get("caption"), "hashtags": package.get("hashtags", []), "platform_metadata": {"youtube": {"title": package.get("title"), "description": package.get("description")}, "instagram": {"caption": package.get("caption")}, "facebook": {"description": package.get("description")}}}
         update_job(status="script_ready", stage="script_ready", progress=40, script=package, storyboard={"teacher": teacher, "visual": visual})
         seo_row = supabase.table("seo_metadata").insert({"user_id": job["user_id"], "content_job_id": JOB_ID, **seo}).select("id").single().execute().data
-        if seo_row:
-            update_job(stage="rendering", progress=45, seo_metadata_id=seo_row["id"])
+        update_job(stage="rendering", progress=45, seo_metadata_id=seo_row["id"] if seo_row else None)
 
-        rendered = work / "rendered.mp4"
-        final = work / "final.mp4"
+        rendered = work / "rendered.mp4"; final = work / "final.mp4"
         result = generate_final_video(teacher, visual, rendered, quality=QUALITY, tts_voice=str(job.get("narrator") or "en-IN-NeerjaNeural"), tts_rate="+0%", tts_volume="+0%", max_repair_cycles=2, render_timeout_seconds=1200)
         if not result.get("passed"):
             raise RuntimeError(result.get("message", "Short render failed"))
@@ -126,9 +124,19 @@ def main():
         burn_captions(rendered, teacher, final)
         remote = f"jobs/{JOB_ID}/final.mp4"
         response = supabase.storage.from_(BUCKET).upload(remote, final.read_bytes(), {"content-type": "video/mp4", "cache-control": "no-store", "upsert": "true"})
-        if getattr(response, "error", None):
-            raise RuntimeError(f"Final video upload failed: {response.error}")
-        update_job(status="completed", stage="ready_to_publish", progress=100, output_path=remote, completed_at="now()", error=None)
+        if getattr(response, "error", None): raise RuntimeError(f"Final video upload failed: {response.error}")
+
+        publication_rows = []
+        for platform in job.get("platforms") or []:
+            connection = supabase.table("social_connections").select("id").eq("user_id", job["user_id"]).eq("platform", platform).eq("status", "active").limit(1).maybe_single().execute().data
+            if not connection: raise RuntimeError(f"Active {platform} connection disappeared before publishing.")
+            created = supabase.table("publication_jobs").insert({"user_id": job["user_id"], "content_job_id": JOB_ID, "social_connection_id": connection["id"], "platform": platform, "status": "queued", "payload": {}}).select("id").single().execute().data
+            if created: publication_rows.append(created["id"])
+
+        update_job(status="publishing", stage="publishing", progress=98, output_path=remote, completed_at=NOW(), error=None)
+        for publication_id in publication_rows:
+            dispatch_publication(publication_id)
+        update_job(status="completed", stage="published_or_queued", progress=100, output_path=remote, completed_at=NOW(), error=None)
         print("JUPITER SHORT = SUCCESS")
         print(remote)
 
