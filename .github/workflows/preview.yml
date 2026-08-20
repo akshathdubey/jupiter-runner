@@ -56,14 +56,33 @@ jobs:
           set -euo pipefail
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends ffmpeg pkg-config libcairo2-dev libpango1.0-dev libpangocairo-1.0-0 libglib2.0-dev ca-certificates curl gnupg
+
           if ! command -v pdflatex >/dev/null 2>&1; then
             curl -fsSL https://miktex.org/download/key | sudo gpg --dearmor --yes -o /usr/share/keyrings/miktex.gpg
             echo "deb [signed-by=/usr/share/keyrings/miktex.gpg] https://miktex.org/download/ubuntu noble universe" | sudo tee /etc/apt/sources.list.d/miktex.list >/dev/null
             sudo apt-get update -y
             sudo apt-get install -y --no-install-recommends miktex
           fi
+
+          # MiKTeX may install its executables outside the default PATH on Ubuntu.
+          MIKTEX_BIN="$(dirname "$(find /usr /opt -type f -name pdflatex -perm -111 2>/dev/null | head -n 1)")"
+          if [ -z "$MIKTEX_BIN" ] || [ "$MIKTEX_BIN" = "." ]; then
+            MIKTEX_BIN="/usr/local/bin"
+          fi
+          echo "$MIKTEX_BIN" >> "$GITHUB_PATH"
+
+          # Refresh MiKTeX's file-name database before the verification so freshly
+          # installed binaries and formats are available to downstream analysis.
+          if command -v initexmf >/dev/null 2>&1; then
+            initexmf --admin --update-fndb || true
+          fi
+          if command -v mpm >/dev/null 2>&1; then
+            mpm --admin --update-db || true
+          fi
+
           command -v ffmpeg
           command -v pdflatex
+          pdflatex --version | head -n 1
       - name: Prepare Python environment
         shell: bash
         run: |
