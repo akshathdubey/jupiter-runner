@@ -10,6 +10,7 @@ on:
         type: string
 permissions:
   contents: read
+  actions: write
 concurrency:
   group: jupiter-shorts-${{ inputs.content_job_id }}
   cancel-in-progress: false
