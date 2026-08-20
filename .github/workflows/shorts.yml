@@ -1,5 +1,4 @@
 name: Jupiter Shorts
-
 run-name: Jupiter Shorts - ${{ inputs.content_job_id }}
 
 on:
@@ -9,14 +8,11 @@ on:
         description: Jupiter Shorts content job ID
         required: true
         type: string
-
 permissions:
   contents: read
-
 concurrency:
   group: jupiter-shorts-${{ inputs.content_job_id }}
   cancel-in-progress: false
-
 env:
   JUPITER_AICREDITS_OFFLINE_CATALOG: "true"
   JUPITER_ENABLE_TOOL_STRUCTURED_OUTPUT: "false"
@@ -29,10 +25,7 @@ jobs:
     steps:
       - name: Checkout runner
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-          clean: true
-
+        with: { fetch-depth: 1, clean: true }
       - name: Generate private-core access token
         id: core-token
         uses: actions/create-github-app-token@v3
@@ -40,11 +33,9 @@ jobs:
           client-id: ${{ vars.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: akshathdubey
-          repositories: |
-            jupiter-core
+          repositories: jupiter-core
           permission-contents: read
           permission-metadata: read
-
       - name: Checkout canonical Jupiter core
         uses: actions/checkout@v4
         with:
@@ -54,7 +45,6 @@ jobs:
           path: jupiter-core
           fetch-depth: 1
           clean: true
-
       - name: Install rendering dependencies
         shell: bash
         run: |
@@ -69,7 +59,6 @@ jobs:
           fi
           command -v ffmpeg
           command -v pdflatex
-
       - name: Prepare Python environment
         shell: bash
         run: |
@@ -83,7 +72,6 @@ jobs:
           echo "${VENV_DIR}/bin" >> "$GITHUB_PATH"
           echo "VIRTUAL_ENV=${VENV_DIR}" >> "$GITHUB_ENV"
           python -m manim --version
-
       - name: Zero-credit Shorts preflight
         env:
           AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
@@ -97,18 +85,17 @@ jobs:
           import py_compile
           files = [
               "scripts/shorts_runner.py",
+              "scripts/publisher.py",
               "jupiter-core/app/intelligence/shorts_generator.py",
               "jupiter-core/app/intelligence/visual_designer.py",
               "jupiter-core/app/intelligence/production_pipeline.py",
               "jupiter-core/app/intelligence/caption_burn_in.py",
           ]
-          for path in files:
-              py_compile.compile(path, doraise=True)
+          for path in files: py_compile.compile(path, doraise=True)
           import app.visual_engine
           from app.intelligence.shorts_generator import build_short_package
           print("SHORTS PREFLIGHT = OK")
           PY
-
       - name: Run Jupiter Shorts
         env:
           CONTENT_JOB_ID: ${{ inputs.content_job_id }}
@@ -117,18 +104,17 @@ jobs:
           AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
           AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
           AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
+          GITHUB_ACTIONS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           QUALITY: normal
           PYTHONPATH: ${{ github.workspace }}/jupiter-core
           PYTHONUNBUFFERED: "1"
         shell: bash
         run: python -u scripts/shorts_runner.py
-
       - name: Upload Shorts diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: jupiter-shorts-debug-${{ inputs.content_job_id }}
-          path: |
-            .jupiter_debug/
+          path: .jupiter_debug/
           if-no-files-found: warn
           retention-days: 7
