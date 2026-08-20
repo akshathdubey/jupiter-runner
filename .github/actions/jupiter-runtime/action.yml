@@ -1,0 +1,100 @@
+name: Jupiter Runtime
+
+description: >-
+  Reusable GitHub-native runtime bootstrap for Jupiter jobs. Uses GitHub Actions
+  cache for Python wheels, MiKTeX packages, and runtime state; system packages
+  are installed from Ubuntu's repositories. No Docker is required.
+
+inputs:
+  python-version:
+    description: Python version
+    required: false
+    default: "3.11"
+  install-miktex:
+    description: Install and initialize MiKTeX
+    required: false
+    default: "true"
+  install-edge-tts:
+    description: Install edge-tts
+    required: false
+    default: "false"
+  extra-python-packages:
+    description: Additional pip packages
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Restore Jupiter package caches
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cache/pip
+          ~/.cache/miktex
+          /tmp/jupiter-apt-cache
+        key: jupiter-runtime-${{ runner.os }}-${{ inputs.python-version }}-${{ hashFiles('requirements.txt', 'jupiter-core/requirements.txt', 'jupiter-core/pyproject.toml') }}-v1
+
+    - name: Install Jupiter system runtime
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g; s|https://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+        fi
+        sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update
+        sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y --no-install-recommends \
+          ffmpeg pkg-config libcairo2 libcairo2-dev libpango-1.0-0 libpango1.0-dev \
+          libpangocairo-1.0-0 libglib2.0-0 libglib2.0-dev fonts-dejavu-core \
+          ca-certificates curl gnupg
+
+    - name: Install and initialize MiKTeX
+      if: ${{ inputs.install-miktex == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v miktex >/dev/null 2>&1 || ! command -v pdflatex >/dev/null 2>&1; then
+          curl -fsSL https://miktex.org/download/key | sudo gpg --dearmor --yes -o /usr/share/keyrings/miktex.gpg
+          echo "deb [signed-by=/usr/share/keyrings/miktex.gpg] https://miktex.org/download/ubuntu noble universe" | sudo tee /etc/apt/sources.list.d/miktex.list >/dev/null
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y --no-install-recommends miktex
+        fi
+
+        MIKTEX_BIN="$(find /usr /opt -type f -name pdflatex -perm -111 2>/dev/null | head -n 1 | xargs -r dirname)"
+        if [ -n "${MIKTEX_BIN:-}" ]; then echo "$MIKTEX_BIN" >> "$GITHUB_PATH"; fi
+        if command -v miktexsetup >/dev/null 2>&1; then sudo miktexsetup --shared=yes finish || true; fi
+        if command -v initexmf >/dev/null 2>&1; then sudo initexmf --admin --set-config-value '[MPM]AutoInstall=1' || true; fi
+        if command -v initexmf >/dev/null 2>&1; then sudo initexmf --admin --update-fndb || true; fi
+        command -v pdflatex
+        pdflatex --version | head -n 1
+
+    - name: Prepare Jupiter Python runtime
+      shell: bash
+      run: |
+        set -euo pipefail
+        VENV_DIR="${GITHUB_WORKSPACE}/.jupiter_runtime_venv"
+        if [ ! -x "${VENV_DIR}/bin/python" ]; then
+          rm -rf "${VENV_DIR}"
+          python -m venv "${VENV_DIR}"
+          "${VENV_DIR}/bin/python" -m pip install --upgrade pip
+          "${VENV_DIR}/bin/python" -m pip install -r requirements.txt
+          "${VENV_DIR}/bin/python" -m pip install -r jupiter-core/requirements.txt
+          "${VENV_DIR}/bin/python" -m pip install -e jupiter-core
+          if [ -n "${{ inputs.install-edge-tts }}" ] && [ "${{ inputs.install-edge-tts }}" = "true" ]; then
+            "${VENV_DIR}/bin/python" -m pip install edge-tts
+          fi
+          if [ -n "${{ inputs.extra-python-packages }}" ]; then
+            "${VENV_DIR}/bin/python" -m pip install ${{ inputs.extra-python-packages }}
+          fi
+        else
+          echo "Using cached Jupiter Python runtime."
+        fi
+        echo "${VENV_DIR}/bin" >> "$GITHUB_PATH"
+        echo "VIRTUAL_ENV=${VENV_DIR}" >> "$GITHUB_ENV"
+        "${VENV_DIR}/bin/python" -m manim --version
+        "${VENV_DIR}/bin/python" -c "import supabase; import app.visual_engine; print('JUPITER RUNTIME = READY')"
