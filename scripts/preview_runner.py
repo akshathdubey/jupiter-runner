@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from scripts.shorts_runner import build_artifact, build_source_context, get_job, supabase, update_job, BUCKET, JOB_ID, QUALITY
 
 PREVIEW_SECONDS = 10
+PREVIEW_TARGET_MINUTES = max(1, (PREVIEW_SECONDS + 59) // 60)
 
 
 def watermark_video(input_path: Path, output_path: Path) -> None:
@@ -56,7 +57,7 @@ def main() -> None:
         fact_ledger = build_fact_ledger(artifact)
 
         update_job(stage="preview_storyboarding", progress=35)
-        visual = create_visual_design(teacher, target_minutes=1, quality=QUALITY, fact_ledger=fact_ledger, subject="infotainment", image_assets=[])
+        visual = create_visual_design(teacher, target_minutes=PREVIEW_TARGET_MINUTES, quality=QUALITY, fact_ledger=fact_ledger, subject="infotainment", image_assets=[])
         visual["visual_system"] = dict(visual.get("visual_system") or {})
         visual["visual_system"]["aspect_ratio"] = "9:16"
         update_job(stage="preview_rendering", progress=50, script=package, storyboard={"teacher": teacher, "visual": visual})
@@ -75,8 +76,6 @@ def main() -> None:
         upload = supabase.storage.from_(BUCKET).upload(remote, final.read_bytes(), {"content-type": "video/mp4", "cache-control": "no-store", "upsert": "true"})
         if getattr(upload, "error", None):
             raise RuntimeError(f"Preview upload failed: {upload.error}")
-        # A preview is not a completed production job. Keep the lifecycle status
-        # in the supported job-state contract and expose readiness via preview_status.
         update_job(status="running", stage="preview_ready", progress=100, preview_status="ready", preview_path=remote, preview_generated_at=datetime.now(timezone.utc).isoformat(), preview_watermarked=True, error=None)
         print("JUPITER PREVIEW = SUCCESS")
         print(remote)
