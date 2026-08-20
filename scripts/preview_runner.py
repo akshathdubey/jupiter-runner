@@ -17,7 +17,6 @@ def watermark_video(input_path: Path, output_path: Path) -> None:
     if not ffmpeg:
         raise RuntimeError("ffmpeg is required for preview watermarking.")
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    # Lightweight, always-visible preview watermark. Full renders never use this function.
     vf = (
         "drawtext=fontcolor=white@0.42:fontsize=34:box=1:boxcolor=000000@0.20:boxborderw=18:"
         "x=(w-text_w)/2:y=h*0.54:text='JUPITER PREVIEW'"
@@ -76,7 +75,9 @@ def main() -> None:
         upload = supabase.storage.from_(BUCKET).upload(remote, final.read_bytes(), {"content-type": "video/mp4", "cache-control": "no-store", "upsert": "true"})
         if getattr(upload, "error", None):
             raise RuntimeError(f"Preview upload failed: {upload.error}")
-        update_job(status="preview_ready", stage="preview_ready", progress=100, preview_status="ready", preview_path=remote, preview_generated_at=datetime.now(timezone.utc).isoformat(), preview_watermarked=True, error=None)
+        # A preview is not a completed production job. Keep the lifecycle status
+        # in the supported job-state contract and expose readiness via preview_status.
+        update_job(status="running", stage="preview_ready", progress=100, preview_status="ready", preview_path=remote, preview_generated_at=datetime.now(timezone.utc).isoformat(), preview_watermarked=True, error=None)
         print("JUPITER PREVIEW = SUCCESS")
         print(remote)
 
