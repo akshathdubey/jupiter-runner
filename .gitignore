@@ -1,3 +1,8 @@
 jupiter-core/
+.jupiter_runtime_venv/
+.jupiter_cache/
+jobs/
+uploads/
+e2e-report.json
 __pycache__/
 *.pyc
