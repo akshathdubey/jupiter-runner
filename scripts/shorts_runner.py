@@ -88,6 +88,7 @@ def dispatch_publication(publication_job_id: str):
 
 def main():
     job = get_job()
+    publication_mode = "automatic" if str(job.get("publication_mode") or "manual") == "automatic" else "manual"
     update_job(status="running", stage="ingesting_assets", progress=5, started_at=NOW(), error=None)
     with tempfile.TemporaryDirectory(prefix=f"jupiter-short-{JOB_ID}-") as temp_dir:
         work = Path(temp_dir)
@@ -106,8 +107,7 @@ def main():
         from app.intelligence.caption_burn_in import burn_captions
 
         update_job(stage="planning", progress=15)
-        target_seconds = 60
-        package = build_short_package(prompt=str(job["prompt"]), source_context=source_context, target_seconds=target_seconds, tone=str(job.get("tone") or "infotainment"), quality=QUALITY)
+        package = build_short_package(prompt=str(job["prompt"]), source_context=source_context, target_seconds=60, tone=str(job.get("tone") or "infotainment"), quality=QUALITY)
         teacher = {"learning_objective": package.get("hook") or package.get("title", ""), "audience_assumptions": [package.get("audience", "general audience")], "units": package.get("units", [])}
         fact_ledger = build_fact_ledger(artifact)
 
@@ -126,7 +126,7 @@ def main():
         if not result.get("passed"):
             raise RuntimeError(result.get("message", "Short render failed"))
         update_job(status="qa", stage="captioning", progress=88)
-        burn_captions(rendered, teacher, final)
+        burn_captions(rendered, teacher, final, visual=visual)
         remote = f"jobs/{JOB_ID}/final.mp4"
         response = supabase.storage.from_(BUCKET).upload(remote, final.read_bytes(), {"content-type": "video/mp4", "cache-control": "no-store", "upsert": "true"})
         if getattr(response, "error", None):
@@ -141,14 +141,17 @@ def main():
             if existing:
                 publication_ids.append(str(existing["id"]))
                 continue
-            created = supabase.table("publication_jobs").insert({"user_id": job["user_id"], "content_job_id": JOB_ID, "social_connection_id": connection["id"], "platform": platform, "status": "queued", "payload": {}}).select("id").single().execute().data
+            created = supabase.table("publication_jobs").insert({"user_id": job["user_id"], "content_job_id": JOB_ID, "social_connection_id": connection["id"], "platform": platform, "status": "queued", "auto_publish": publication_mode == "automatic", "payload": {}}).select("id").single().execute().data
             if created:
                 publication_ids.append(str(created["id"]))
 
-        update_job(status="publishing", stage="publishing", progress=98, output_path=remote, completed_at=None, error=None)
-        for publication_id in publication_ids:
-            dispatch_publication(publication_id)
-        update_job(status="completed", stage="published_or_queued", progress=100, output_path=remote, completed_at=NOW(), error=None)
+        if publication_mode == "automatic" and publication_ids:
+            update_job(status="publishing", stage="publishing", progress=98, output_path=remote, error=None)
+            for publication_id in publication_ids:
+                dispatch_publication(publication_id)
+            update_job(status="completed", stage="published_or_queued", progress=100, output_path=remote, completed_at=NOW(), error=None)
+        else:
+            update_job(status="ready_to_post", stage="ready_to_post", progress=100, output_path=remote, error=None)
         print("JUPITER SHORT = SUCCESS")
         print(remote)
 
