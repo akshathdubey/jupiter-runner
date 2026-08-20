@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       job_id:
-        description: Jupiter analysis job ID
+        description: Lesson analysis job ID
         required: true
         type: string
       target_minutes:
@@ -28,15 +28,15 @@ concurrency:
   group: jupiter-analysis-${{ inputs.job_id }}
   cancel-in-progress: false
 
+env:
+  JUPITER_AICREDITS_OFFLINE_CATALOG: "true"
+  JUPITER_ENABLE_TOOL_STRUCTURED_OUTPUT: "false"
+
 jobs:
   analyze:
     name: Analyze document
     runs-on: ubuntu-24.04
     timeout-minutes: 120
-    env:
-      JUPITER_AICREDITS_OFFLINE_CATALOG: "true"
-      JUPITER_ENABLE_TOOL_STRUCTURED_OUTPUT: "false"
-
     steps:
       - name: Checkout public runner
         uses: actions/checkout@v4
@@ -51,8 +51,7 @@ jobs:
           client-id: ${{ vars.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: akshathdubey
-          repositories: |
-            jupiter-core
+          repositories: jupiter-core
           permission-contents: read
           permission-metadata: read
 
@@ -66,101 +65,34 @@ jobs:
           fetch-depth: 1
           clean: true
 
-      - name: Verify canonical core before AI work
+      - name: Verify canonical core
         shell: bash
         run: |
           set -euo pipefail
           cd jupiter-core
           echo "JUPITER CORE COMMIT=$(git rev-parse HEAD)"
-          test -f app/intelligence/llm_gateway.py
-          test -f app/intelligence/production_pipeline.py
-          test -f app/intelligence/caption_burn_in.py
-          test -f app/visual_engine/camera.py
-          test -f app/visual_engine/math_engine.py
-          test -f app/visual_engine/constraints.py
-          test -f app/visual_engine/story_patterns.py
-          test -f app/visual_engine/audio_sync.py
-          test -f app/visual_engine/visual_qa.py
+          for path in \
+            app/intelligence/llm_gateway.py \
+            app/intelligence/production_pipeline.py \
+            app/intelligence/caption_burn_in.py \
+            app/visual_engine/camera.py \
+            app/visual_engine/math_engine.py \
+            app/visual_engine/constraints.py \
+            app/visual_engine/story_patterns.py \
+            app/visual_engine/audio_sync.py \
+            app/visual_engine/visual_qa.py; do
+            test -f "$path"
+          done
           echo "CORE PREFLIGHT = OK"
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Setup Jupiter runtime
+        uses: ./.github/actions/jupiter-runtime
         with:
-          python-version: "3.11"
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            jupiter-core/requirements.txt
-            jupiter-core/pyproject.toml
+          install-miktex: "true"
 
-      - name: Verify rendering system dependencies
+      - name: Prepare analysis directories
         shell: bash
-        run: |
-          set -euo pipefail
-          MISSING=0
-          command -v ffmpeg >/dev/null 2>&1 || MISSING=1
-          command -v pkg-config >/dev/null 2>&1 || MISSING=1
-          pkg-config --exists cairo 2>/dev/null || MISSING=1
-          pkg-config --exists pangocairo 2>/dev/null || MISSING=1
-          pkg-config --exists glib-2.0 2>/dev/null || MISSING=1
-          if [ "$MISSING" -ne 0 ]; then
-            if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
-              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g; s|https://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
-            fi
-            sudo apt-get clean
-            sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update
-            sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 install -y --no-install-recommends ffmpeg pkg-config libcairo2 libcairo2-dev libpango-1.0-0 libpango1.0-dev libpangocairo-1.0-0 libglib2.0-0 libglib2.0-dev
-          fi
-          ffmpeg -version | head -n 1
-          pkg-config --modversion cairo
-          pkg-config --modversion pangocairo
-          pkg-config --modversion glib-2.0
-
-      - name: Install MiKTeX for analysis-time math preflight
-        shell: bash
-        run: |
-          set -euo pipefail
-          if command -v pdflatex >/dev/null 2>&1 && command -v miktex >/dev/null 2>&1; then
-            echo "MiKTeX already available."
-          else
-            sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update
-            sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 install -y --no-install-recommends ca-certificates curl gnupg
-            curl -fsSL https://miktex.org/download/key | sudo gpg --dearmor --yes -o /usr/share/keyrings/miktex.gpg
-            echo "deb [signed-by=/usr/share/keyrings/miktex.gpg] https://miktex.org/download/ubuntu noble universe" | sudo tee /etc/apt/sources.list.d/miktex.list >/dev/null
-            sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update
-            sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 install -y --no-install-recommends miktex
-          fi
-          command -v pdflatex
-          pdflatex --version | head -n 1
-          if command -v miktex >/dev/null 2>&1; then miktex --version | head -n 1; fi
-          if command -v initexmf >/dev/null 2>&1; then sudo initexmf --admin --set-config-value '[MPM]AutoInstall=1' || true; fi
-          echo "MIKTEX = READY"
-
-      - name: Restore Jupiter Python environment cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            .jupiter_runtime_venv
-            .jupiter_cache
-          key: jupiter-${{ runner.os }}-py311-analysis-${{ hashFiles('requirements.txt', 'jupiter-core/requirements.txt', 'jupiter-core/pyproject.toml') }}-v4
-
-      - name: Prepare cached Jupiter runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p uploads jobs .jupiter_cache
-          VENV_DIR="${GITHUB_WORKSPACE}/.jupiter_runtime_venv"
-          if [ ! -x "${VENV_DIR}/bin/python" ]; then
-            rm -rf "${VENV_DIR}"
-            python -m venv "${VENV_DIR}"
-            "${VENV_DIR}/bin/python" -m pip install --upgrade pip
-            "${VENV_DIR}/bin/python" -m pip install -r requirements.txt
-            "${VENV_DIR}/bin/python" -m pip install -r jupiter-core/requirements.txt
-            "${VENV_DIR}/bin/python" -m pip install -e jupiter-core
-          fi
-          echo "${VENV_DIR}/bin" >> "$GITHUB_PATH"
-          echo "VIRTUAL_ENV=${VENV_DIR}" >> "$GITHUB_ENV"
-          python -m manim --version
+        run: mkdir -p uploads jobs .jupiter_cache
 
       - name: Zero-credit rendering contract preflight
         env:
@@ -204,8 +136,7 @@ jobs:
           pdf = compile_latex(r"E=mc^2", Path(".jupiter_cache") / "analysis-math-preflight")
           assert pdf.exists() and pdf.stat().st_size > 0
 
-          sample_teacher = {"units": [{"duration_seconds": 4, "narration": "Caption preflight confirms the lower safe area contract."}]}
-          cues = build_caption_cues(sample_teacher)
+          cues = build_caption_cues({"units": [{"duration_seconds": 4, "narration": "Caption preflight confirms the lower safe area contract."}]})
           assert cues and cues[0]["end"] > cues[0]["start"]
 
           models = ModelCatalog(os.environ["AICREDITS_API_KEY"], "https://api.aicredits.in/v1").refresh()
@@ -260,8 +191,6 @@ jobs:
           AICREDITS_API_KEY: ${{ secrets.AICREDITS_API_KEY }}
           AICREDITS_MODEL_NORMAL: ${{ vars.AICREDITS_MODEL_NORMAL }}
           AICREDITS_MODEL_ELITE: ${{ vars.AICREDITS_MODEL_ELITE }}
-          JUPITER_AICREDITS_OFFLINE_CATALOG: "true"
-          JUPITER_ENABLE_TOOL_STRUCTURED_OUTPUT: "false"
           PYTHONPATH: ${{ github.workspace }}/jupiter-core
           PYTHONUNBUFFERED: "1"
         shell: bash
