@@ -12,6 +12,8 @@ on:
 permissions:
   contents: read
 
+timeout-minutes: 35
+
 concurrency:
   group: jupiter-preview-${{ inputs.content_job_id }}
   cancel-in-progress: false
@@ -19,6 +21,7 @@ concurrency:
 env:
   JUPITER_AICREDITS_OFFLINE_CATALOG: "true"
   JUPITER_ENABLE_TOOL_STRUCTURED_OUTPUT: "false"
+  JUPITER_PREVIEW_SECONDS: "10"
 
 jobs:
   preview:
@@ -66,8 +69,14 @@ jobs:
           for path in ["build.py", "scripts/preview_runner.py"]:
               py_compile.compile(path, doraise=True)
           import app.visual_engine
-          from app.intelligence.shorts_generator import build_short_package
-          print("PREVIEW PREFLIGHT = OK")
+          from app.intelligence.shorts_generator import _normalize_units
+          normalized = _normalize_units([
+              {"unit_id": "a", "duration_seconds": 8},
+              {"unit_id": "b", "duration_seconds": 8},
+          ], 10)
+          assert sum(int(unit["duration_seconds"]) for unit in normalized) == 10
+          assert all(int(unit["duration_seconds"]) >= 1 for unit in normalized)
+          print("PREVIEW DURATION CONTRACT = OK")
           PY
       - name: Run Jupiter preview
         env:
